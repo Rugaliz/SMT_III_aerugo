@@ -6,9 +6,11 @@
 pub mod kernel;
 pub mod process;
 pub mod rng;
+pub mod sequence;
 pub mod tick;
 
 pub use kernel::{Kernel, KernelHost};
 pub use process::{FlagScope, ProcessFn, ProcessHost, ProcessId, Scheduler, State};
 pub use rng::{LocalTime, Rng};
+pub use sequence::{SequenceHooks, SequenceHost};
 pub use tick::{FixedTimestep, GAME_TICK_HZ, Steps};
