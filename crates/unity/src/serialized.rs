@@ -9,7 +9,66 @@ use crate::typetree::{TypeTree, read_type_tree};
 pub struct SerializedType {
     pub class_id: i32,
     pub script_type_index: i16,
+    /// Script identity hash (MonoBehaviour types only).
+    pub script_id: Option<[u8; 16]>,
+    /// Hash of the type's layout.
+    pub type_hash: [u8; 16],
+    /// The type tree: embedded in the file, or supplied by a [`TypeTreeRegistry`] for files saved without.
     pub tree: Option<TypeTree>,
+}
+
+/// Identity of a serialized type layout: class, script and layout hash.
+pub type TypeKey = (i32, Option<[u8; 16]>, [u8; 16]);
+
+/// Type trees collected from files that embed them, used to read files of the same engine version that don't
+/// (the player's own scene and resource files).
+#[derive(Debug, Default)]
+pub struct TypeTreeRegistry {
+    trees: std::collections::HashMap<TypeKey, TypeTree>,
+}
+
+impl TypeTreeRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Remember every embedded type tree of a file.
+    pub fn add_file(&mut self, sf: &SerializedFile<'_>) {
+        for t in &sf.types {
+            if let Some(tree) = &t.tree {
+                self.trees.entry((t.class_id, t.script_id, t.type_hash)).or_insert_with(|| tree.clone());
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.trees.len()
+    }
+
+    /// Take over the trees of another registry (keeping existing ones).
+    pub fn merge(&mut self, other: TypeTreeRegistry) {
+        for (k, v) in other.trees {
+            self.trees.entry(k).or_insert(v);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.trees.is_empty()
+    }
+
+    /// Fill in the missing type trees of a file. Returns how many types are still without one.
+    pub fn complete(&self, sf: &mut SerializedFile<'_>) -> usize {
+        let mut missing = 0;
+        for t in &mut sf.types {
+            if t.tree.is_none() {
+                t.tree = self.trees.get(&(t.class_id, t.script_id, t.type_hash)).cloned();
+                if t.tree.is_none() {
+                    missing += 1;
+                }
+            }
+        }
+        missing
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -175,16 +234,18 @@ fn read_serialized_type(r: &mut Reader, version: u32, tree: bool, is_ref: bool) 
         let _stripped = r.u8()?;
     }
     let script_type_index = if version >= 17 { r.i16()? } else { -1 };
+    let mut script_id = None;
+    let mut type_hash = [0u8; 16];
     if version >= 13 {
         let has_script_id = (is_ref && script_type_index >= 0)
             || (version < 16 && class_id < 0)
             || (version >= 16 && class_id == 114);
         if has_script_id {
-            r.take(16)?;
+            script_id = Some(r.take(16)?.try_into().unwrap());
         }
-        r.take(16)?; // old type hash
+        type_hash = r.take(16)?.try_into().unwrap();
     }
-    let mut out = SerializedType { class_id, script_type_index, tree: None };
+    let mut out = SerializedType { class_id, script_type_index, script_id, type_hash, tree: None };
     if tree {
         if version < 12 && version != 10 {
             bail!("legacy type tree format (version {version}) not supported");

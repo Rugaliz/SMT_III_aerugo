@@ -9,5 +9,5 @@ pub mod typetree;
 
 pub use archive::{Archive, ObjRef, Texture2D, TextureFormat};
 pub use bundle::{Bundle, BundleNode, is_bundle};
-pub use serialized::{ObjectInfo, SerializedFile, looks_serialized};
+pub use serialized::{ObjectInfo, SerializedFile, TypeTreeRegistry, looks_serialized};
 pub use typetree::{ReadOpts, TypeTree, ValueReader};
