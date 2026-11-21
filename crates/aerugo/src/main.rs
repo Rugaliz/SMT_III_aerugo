@@ -137,9 +137,18 @@ fn main() -> Result<()> {
     }
     if let Some(bundle) = &args.play_sound {
         let clip = sound.first_clip(&mut assets.borrow_mut(), bundle)?;
-        log::info!("{bundle}: {} frames at {} Hz, {} channels", clip.frames(), clip.rate, clip.channels);
-        let play = aerugo_audio::Play { group: aerugo_audio::Group::Bgm, volume: 1.0, looping: None };
-        sound.mixer.lock().play(clip, play);
+        let p = &clip.pcm;
+        log::info!(
+            "{bundle}: {} frames at {} Hz, {} channels, loop {:?}",
+            p.frames(),
+            p.rate,
+            p.channels,
+            clip.loop_points
+        );
+        // Sounds with stored loop points loop between them; others play once.
+        let play =
+            aerugo_audio::Play { group: aerugo_audio::Group::Bgm, volume: 1.0, looping: clip.loop_points };
+        sound.mixer.lock().play(clip.pcm, play);
     }
     let mut ui_renderer = UiRenderer::new(assets.clone());
     let mut game = Game::new(TitleScreens::new(assets), args.language);

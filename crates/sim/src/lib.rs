@@ -8,6 +8,7 @@ pub mod kernel;
 pub mod process;
 pub mod rng;
 pub mod sequence;
+pub mod sound_ids;
 pub mod tick;
 pub mod title;
 
