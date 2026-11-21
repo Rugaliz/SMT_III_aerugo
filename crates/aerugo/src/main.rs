@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use aerugo_gfx::{Gfx, Sprite, TextureId};
 use aerugo_platform::{Platform, PlatformEvent};
-use aerugo_sim::FixedTimestep;
+use aerugo_sim::{FixedTimestep, Kernel, KernelHost, ProcessHost};
 use anyhow::{Context, Result, bail};
 use sdl3::keyboard::Scancode;
 
@@ -42,6 +42,21 @@ fn parse_args() -> Result<Args> {
     }
     Ok(a)
 }
+
+/// State shared by every game process.
+#[derive(Debug, Default)]
+struct Game {
+    /// Whether the process running now may read the player's input.
+    input_enabled: bool,
+}
+
+impl ProcessHost for Game {
+    fn process_input(&mut self, enabled: bool) {
+        self.input_enabled = enabled;
+    }
+}
+
+impl KernelHost for Game {}
 
 /// Developer viewer: one texture, centered with its aspect ratio kept.
 #[derive(Debug)]
@@ -83,6 +98,8 @@ fn main() -> Result<()> {
         view = Some(TextureView { tex: gfx.upload_texture(&tex)? });
     }
 
+    let mut game = Game::default();
+    let mut kernel: Kernel<Game> = Kernel::new();
     let mut clock = FixedTimestep::new();
     let (mut frames, mut fps_t) = (0u32, Instant::now());
     'main: loop {
@@ -98,6 +115,7 @@ fn main() -> Result<()> {
         let steps = clock.advance();
         for _ in 0..steps.ticks {
             let _edges = platform.input.latch();
+            kernel.tick(&mut game);
         }
         let sprites = view.as_ref().map(|v| v.sprites(&gfx)).unwrap_or_default();
         gfx.render([0.0, 0.0, 0.0, 1.0], &sprites)?;
@@ -112,7 +130,7 @@ fn main() -> Result<()> {
                 w,
                 h,
                 w as f32 / h as f32,
-                clock.total_ticks,
+                kernel.frame_count(),
                 gfx.present_mode
             );
             frames = 0;

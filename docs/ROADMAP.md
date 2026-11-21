@@ -8,7 +8,7 @@
 - [x] Unity asset bundle reader (LZ4 bundles, serialized files, type trees, textures)
 - [x] The game's random number generator
 - [ ] Automatic detection of the Steam installation
-- [ ] Process scheduler that runs the game's systems each tick
+- [x] Process scheduler that runs the game's systems each tick
 - [ ] Boot sequence: logos and title screen from the game's own layouts
 
 ## Later milestones

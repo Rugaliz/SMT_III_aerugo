@@ -8,7 +8,7 @@
 | `aerugo-platform` | SDL3 window and events, keyboard and gamepad input, audio output |
 | `aerugo-gfx` | Vulkan: instance, device, swapchain, frames in flight, sprites, textures |
 | `aerugo-unity` | Reading the game's Unity asset bundles: bundles, serialized files, object values, textures |
-| `aerugo-sim` | Game logic: fixed tick, random numbers; more systems as they are implemented |
+| `aerugo-sim` | Game logic: fixed tick, the process scheduler and per-tick kernel, random numbers; more systems as they are implemented |
 
 ### Dependency rules
 
