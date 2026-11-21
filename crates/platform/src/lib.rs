@@ -36,14 +36,26 @@ pub enum PlatformEvent {
     Key(Scancode),
 }
 
-/// Audio output callback. The mixer will feed it; until then it outputs silence.
-#[derive(Debug)]
-struct Silence;
+/// Output sample rate (most of the game's sounds are 44.1 kHz).
+pub const AUDIO_RATE: u32 = 44100;
 
-impl AudioCallback<f32> for Silence {
+/// Produces interleaved stereo `f32` output; called on the audio thread.
+pub type AudioSource = Box<dyn FnMut(&mut [f32]) + Send>;
+
+/// Audio output callback: silence until a source is attached.
+struct Output {
+    source: Option<AudioSource>,
+    buf: Vec<f32>,
+}
+
+impl AudioCallback<f32> for Output {
     fn callback(&mut self, stream: &mut AudioStream, requested: i32) {
-        let buf = vec![0.0f32; requested.max(0) as usize];
-        let _ = stream.put_data_f32(&buf);
+        self.buf.resize(requested.max(0) as usize, 0.0);
+        match &mut self.source {
+            Some(src) => src(&mut self.buf),
+            None => self.buf.fill(0.0),
+        }
+        let _ = stream.put_data_f32(&self.buf);
     }
 }
 
@@ -54,7 +66,7 @@ pub struct Platform {
     events: sdl3::EventPump,
     gamepad_sys: sdl3::GamepadSubsystem,
     gamepads: Vec<Gamepad>,
-    _audio: Option<AudioStreamWithCallback<Silence>>,
+    audio: Option<AudioStreamWithCallback<Output>>,
     pub input: Input,
 }
 
@@ -81,11 +93,13 @@ impl Platform {
         let events = sdl.event_pump().map_err(|e| anyhow!("SDL events: {e}"))?;
         let gamepad_sys = sdl.gamepad().map_err(|e| anyhow!("SDL gamepad: {e}"))?;
 
-        // The game's audio is 44.1 kHz.
         let audio = sdl.audio().ok().and_then(|a| {
-            let spec =
-                AudioSpec { freq: Some(44100), channels: Some(2), format: Some(AudioFormat::f32_sys()) };
-            match a.open_playback_stream(&spec, Silence) {
+            let spec = AudioSpec {
+                freq: Some(AUDIO_RATE as i32),
+                channels: Some(2),
+                format: Some(AudioFormat::f32_sys()),
+            };
+            match a.open_playback_stream(&spec, Output { source: None, buf: Vec::new() }) {
                 Ok(s) => {
                     let _ = s.resume();
                     Some(s)
@@ -104,7 +118,7 @@ impl Platform {
             events,
             gamepad_sys,
             gamepads: vec![],
-            _audio: audio,
+            audio,
             input: Input::default(),
         })
     }
@@ -147,6 +161,18 @@ impl Platform {
             }
         }
         out
+    }
+
+    /// Send `source`'s output to the speakers. Returns false if audio output is not available.
+    pub fn set_audio_source(&mut self, source: AudioSource) -> bool {
+        let Some(stream) = &mut self.audio else { return false };
+        match stream.lock() {
+            Some(mut out) => {
+                out.source = Some(source);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn toggle_fullscreen(&mut self) {

@@ -14,7 +14,8 @@
 - [x] Opening: warning screen (Japanese), Atlus logo
 - [ ] Mapping keys and buttons to the game's pad (skipping logos)
 - [x] Sound banks decode (all 12,552 samples of the installation)
-- [ ] Audio output: mixing and playing sounds and music
+- [x] Audio output: mixer with the original's four groups, SDL3 stream
+- [ ] The game's sound manager: sound ids, channels, music fades and cross-fades
 - [ ] Movies: ASF container, WMV3 (VC-1) video and WMA v2 audio decoders of our own
 - [ ] Title screen and main menu
 - [ ] The UI brightness/contrast material the original applies to its screens

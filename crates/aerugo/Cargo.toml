@@ -12,6 +12,7 @@ aerugo-gfx.workspace = true
 aerugo-platform.workspace = true
 aerugo-sim.workspace = true
 aerugo-ui.workspace = true
+aerugo-audio.workspace = true
 aerugo-unity.workspace = true
 anyhow.workspace = true
 env_logger.workspace = true

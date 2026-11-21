@@ -46,6 +46,7 @@ Useful while developing:
 
 ```sh
 cargo run --release -- --game "/path/to/smt3hd" view-texture title t_logo   # show one texture
+cargo run --release -- --game "/path/to/smt3hd" play-sound b_bgm01           # play one sound
 cargo run --release -- --vsync                                              # cap to the display rate
 AERUGO_CAPTURE=40:logo.ppm cargo run --release -- --game "/path/to/smt3hd"  # save the frame at tick 40
 ```

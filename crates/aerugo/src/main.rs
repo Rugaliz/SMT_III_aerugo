@@ -2,13 +2,14 @@
 //!
 //! Usage:
 //!   aerugo [--game <install dir>] [--vsync] [--lang ja|en|fr|it|de|es|zh|ko]
-//!          [view-texture <bundle> <asset path substring>]
+//!          [view-texture <bundle> <asset path substring>] [play-sound <bundle>]
 //!
 //! The installation can also be given with `AERUGO_GAME_DIR`. `AERUGO_CAPTURE=<tick>:<file.ppm>[,...]` saves
 //! the frame shown at each listed game tick as a PPM image.
 
 mod assets;
 mod game;
+mod sound;
 mod title_view;
 mod ui_render;
 
@@ -34,6 +35,7 @@ struct Args {
     vsync: bool,
     language: Language,
     view_texture: Option<(String, String)>,
+    play_sound: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -42,6 +44,7 @@ fn parse_args() -> Result<Args> {
         vsync: false,
         language: Language::English,
         view_texture: None,
+        play_sound: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -52,6 +55,7 @@ fn parse_args() -> Result<Args> {
                 let l = it.next().context("--lang needs a language code")?;
                 a.language = Language::parse(&l).with_context(|| format!("unknown language {l:?}"))?;
             }
+            "play-sound" => a.play_sound = Some(it.next().context("play-sound <bundle>")?),
             "view-texture" => {
                 let b = it.next().context("view-texture <bundle> <name>")?;
                 let n = it.next().context("view-texture <bundle> <name>")?;
@@ -126,6 +130,17 @@ fn main() -> Result<()> {
     }
 
     let assets = Rc::new(RefCell::new(Assets::new(&game_dir)));
+    let sound = sound::Sound::new(&game_dir, aerugo_platform::AUDIO_RATE)?;
+    let out = sound.mixer.clone();
+    if !platform.set_audio_source(Box::new(move |buf| out.fill(buf))) {
+        log::warn!("no audio output");
+    }
+    if let Some(bundle) = &args.play_sound {
+        let clip = sound.first_clip(&mut assets.borrow_mut(), bundle)?;
+        log::info!("{bundle}: {} frames at {} Hz, {} channels", clip.frames(), clip.rate, clip.channels);
+        let play = aerugo_audio::Play { group: aerugo_audio::Group::Bgm, volume: 1.0, looping: None };
+        sound.mixer.lock().play(clip, play);
+    }
     let mut ui_renderer = UiRenderer::new(assets.clone());
     let mut game = Game::new(TitleScreens::new(assets), args.language);
     let mut kernel: Kernel<Game> = Kernel::new();
