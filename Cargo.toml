@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/aerugo",
+    "crates/platform",
+    "crates/gfx",
+    "crates/unity",
+    "crates/sim",
+]
+default-members = ["crates/aerugo"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/Rugaliz/SMT_III_aerugo"
+publish = false
+
+[workspace.dependencies]
+# internal
+aerugo-platform = { path = "crates/platform" }
+aerugo-gfx = { path = "crates/gfx" }
+aerugo-unity = { path = "crates/unity" }
+aerugo-sim = { path = "crates/sim" }
+
+# external (licences checked by deny.toml)
+anyhow = "1.0"
+ash = "0.38"
+bytemuck = { version = "1.25", features = ["derive"] }
+env_logger = "0.11"
+gpu-allocator = { version = "0.28", default-features = false, features = ["std", "vulkan"] }
+log = "0.4"
+lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
+sdl3 = { version = "0.22", features = ["ash"] }
+serde_json = "1.0"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

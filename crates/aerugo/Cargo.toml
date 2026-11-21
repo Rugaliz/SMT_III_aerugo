@@ -1,0 +1,21 @@
+[package]
+name = "aerugo"
+description = "Shin Megami Tensei III: Nocturne HD Remaster engine reimplementation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aerugo-gfx.workspace = true
+aerugo-platform.workspace = true
+aerugo-sim.workspace = true
+aerugo-unity.workspace = true
+anyhow.workspace = true
+env_logger.workspace = true
+log.workspace = true
+sdl3.workspace = true
+
+[lints]
+workspace = true
