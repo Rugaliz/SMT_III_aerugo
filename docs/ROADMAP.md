@@ -9,7 +9,15 @@
 - [x] The game's random number generator
 - [ ] Automatic detection of the Steam installation
 - [x] Process scheduler that runs the game's systems each tick
-- [ ] Boot sequence: logos and title screen from the game's own layouts
+- [x] Sequence director and boot into the title
+- [x] UI object trees from the game's layouts, 16:9 canvas, image drawing, full-screen fade
+- [x] Opening: warning screen (Japanese), Atlus logo
+- [ ] Mapping keys and buttons to the game's pad (skipping logos)
+- [x] Sound banks decode (all 12,552 samples of the installation)
+- [ ] Audio output: mixing and playing sounds and music
+- [ ] Movies: ASF container, WMV3 (VC-1) video and WMA v2 audio decoders of our own
+- [ ] Title screen and main menu
+- [ ] The UI brightness/contrast material the original applies to its screens
 
 ## Later milestones
 

@@ -1,0 +1,17 @@
+[package]
+name = "aerugo-ui"
+description = "The game's 2D interface: object trees built from the game's UI assets, layout and draw lists"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aerugo-unity.workspace = true
+anyhow.workspace = true
+log.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

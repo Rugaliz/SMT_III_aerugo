@@ -18,20 +18,38 @@ const FRAMES_IN_FLIGHT: usize = 2;
 #[derive(Clone, Copy, Debug)]
 pub struct TextureId(pub usize);
 
-/// One quad. `dst` is in Vulkan NDC (x right, y down, -1..1); `uv` is u0,v0,u1,v1.
+/// One textured quad. Corners are in Vulkan NDC (x right, y down, -1..1), in triangle-strip order:
+/// `pos[0]`, `pos[1]`, `pos[2]` form the first triangle and `pos[1]`, `pos[2]`, `pos[3]` the second.
 #[derive(Clone, Copy, Debug)]
 pub struct Sprite {
     pub tex: TextureId,
-    pub dst: [f32; 4],
-    pub uv: [f32; 4],
+    pub pos: [[f32; 2]; 4],
+    pub uv: [[f32; 2]; 4],
+    /// Multiplies the texture sample.
     pub color: [f32; 4],
+}
+
+impl Sprite {
+    /// An axis-aligned quad: `dst` and `uv` are `x0, y0, x1, y1`.
+    pub fn rect(tex: TextureId, dst: [f32; 4], uv: [f32; 4], color: [f32; 4]) -> Self {
+        let [x0, y0, x1, y1] = dst;
+        let [u0, v0, u1, v1] = uv;
+        Self {
+            tex,
+            pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]],
+            uv: [[u0, v0], [u1, v0], [u0, v1], [u1, v1]],
+            color,
+        }
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SpritePush {
-    dst: [f32; 4],
-    uv: [f32; 4],
+    pos01: [f32; 4],
+    pos23: [f32; 4],
+    uv01: [f32; 4],
+    uv23: [f32; 4],
     color: [f32; 4],
 }
 
@@ -86,6 +104,17 @@ pub struct Gfx {
     want_extent: (u32, u32),
     dirty: bool,
     pub device_name: String,
+    capture_requested: bool,
+    captured: Option<Capture>,
+}
+
+/// A rendered frame read back from the GPU.
+#[derive(Debug, Clone)]
+pub struct Capture {
+    pub width: u32,
+    pub height: u32,
+    /// RGBA, rows top to bottom.
+    pub rgba: Vec<u8>,
 }
 
 fn spirv(bytes: &[u8]) -> Result<Vec<u32>> {
@@ -265,6 +294,8 @@ impl Gfx {
             want_extent: (w, h),
             dirty: false,
             device_name,
+            capture_requested: false,
+            captured: None,
         };
         gfx.create_swapchain()?;
         gfx.create_sprite_pipeline()?;
@@ -320,7 +351,7 @@ impl Gfx {
                     .image_color_space(fmt.color_space)
                     .image_extent(extent)
                     .image_array_layers(1)
-                    .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+                    .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
                     .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
                     .pre_transform(caps.current_transform)
                     .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
@@ -431,7 +462,7 @@ impl Gfx {
                 .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
                 .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
                 .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .src_alpha_blend_factor(vk::BlendFactor::SRC_ALPHA)
                 .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
                 .alpha_blend_op(vk::BlendOp::ADD)
                 .color_write_mask(vk::ColorComponentFlags::RGBA)];
@@ -676,7 +707,7 @@ impl Gfx {
         let f = &self.frames[self.frame];
         let d = &self.device;
         // SAFETY: the frame's fence is waited on before its command buffer and semaphore are reused; every handle belongs to this device.
-        unsafe {
+        let readback = unsafe {
             d.wait_for_fences(&[f.fence], true, u64::MAX)?;
             let image_index = match self.swapchain_fn.acquire_next_image(
                 self.sc.handle,
@@ -697,6 +728,12 @@ impl Gfx {
                 Err(e) => bail!("acquire_next_image: {e}"),
             };
             d.reset_fences(&[f.fence])?;
+            let readback = if self.capture_requested {
+                self.capture_requested = false;
+                Some(readback_buffer(d, &mut self.allocator, self.sc.extent)?)
+            } else {
+                None
+            };
             let cmd = f.cmd;
             d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
             d.begin_command_buffer(
@@ -746,7 +783,14 @@ impl Gfx {
                     &[t.set],
                     &[],
                 );
-                let push = SpritePush { dst: s.dst, uv: s.uv, color: s.color };
+                let (p, u) = (s.pos, s.uv);
+                let push = SpritePush {
+                    pos01: [p[0][0], p[0][1], p[1][0], p[1][1]],
+                    pos23: [p[2][0], p[2][1], p[3][0], p[3][1]],
+                    uv01: [u[0][0], u[0][1], u[1][0], u[1][1]],
+                    uv23: [u[2][0], u[2][1], u[3][0], u[3][1]],
+                    color: s.color,
+                };
                 d.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
@@ -757,10 +801,39 @@ impl Gfx {
                 d.cmd_draw(cmd, 4, 1, 0, 0);
             }
             d.cmd_end_rendering(cmd);
+            let mut last_layout = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL;
+            if let Some((buf, _)) = &readback {
+                let to_src = [vk::ImageMemoryBarrier2::default()
+                    .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                    .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::COPY)
+                    .dst_access_mask(vk::AccessFlags2::TRANSFER_READ)
+                    .old_layout(last_layout)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .image(img)
+                    .subresource_range(range)];
+                d.cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().image_memory_barriers(&to_src));
+                let region = vk::BufferImageCopy::default()
+                    .image_subresource(vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .image_extent(vk::Extent3D {
+                        width: self.sc.extent.width,
+                        height: self.sc.extent.height,
+                        depth: 1,
+                    });
+                d.cmd_copy_image_to_buffer(cmd, img, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, *buf, &[region]);
+                last_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            }
             let to_present = [vk::ImageMemoryBarrier2::default()
-                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_stage_mask(
+                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags2::COPY,
+                )
                 .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .old_layout(last_layout)
                 .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
                 .image(img)
                 .subresource_range(range)];
@@ -795,9 +868,62 @@ impl Gfx {
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => self.dirty = true,
                 Err(e) => bail!("queue_present: {e}"),
             }
+            readback
+        };
+        if let Some((buf, alloc)) = readback {
+            let fence = self.frames[self.frame].fence;
+            // SAFETY: the copy is complete once the frame's fence signals; the buffer is destroyed after reading.
+            unsafe {
+                self.device.wait_for_fences(&[fence], true, u64::MAX)?;
+                let (w, h) = (self.sc.extent.width, self.sc.extent.height);
+                let src = alloc.mapped_slice().context("readback not mapped")?;
+                let mut rgba = src[..(w * h * 4) as usize].to_vec();
+                if matches!(self.sc.format, vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB) {
+                    for px in rgba.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                }
+                self.captured = Some(Capture { width: w, height: h, rgba });
+                self.device.destroy_buffer(buf, None);
+            }
+            self.allocator.free(alloc)?;
         }
         self.frame = (self.frame + 1) % FRAMES_IN_FLIGHT;
         Ok(true)
+    }
+
+    /// Read back the next rendered frame; fetch it with [`take_capture`](Self::take_capture).
+    pub fn capture_next_frame(&mut self) {
+        self.capture_requested = true;
+    }
+
+    pub fn take_capture(&mut self) -> Option<Capture> {
+        self.captured.take()
+    }
+}
+
+/// A host-visible buffer for reading back a whole swapchain image.
+fn readback_buffer(
+    d: &ash::Device,
+    allocator: &mut Allocator,
+    extent: vk::Extent2D,
+) -> Result<(vk::Buffer, Allocation)> {
+    let size = u64::from(extent.width) * u64::from(extent.height) * 4;
+    // SAFETY: the buffer is created and bound here and destroyed by the caller after use.
+    unsafe {
+        let buf = d.create_buffer(
+            &vk::BufferCreateInfo::default().size(size).usage(vk::BufferUsageFlags::TRANSFER_DST),
+            None,
+        )?;
+        let alloc = allocator.allocate(&AllocationCreateDesc {
+            name: "readback",
+            requirements: d.get_buffer_memory_requirements(buf),
+            location: MemoryLocation::GpuToCpu,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        })?;
+        d.bind_buffer_memory(buf, alloc.memory(), alloc.offset())?;
+        Ok((buf, alloc))
     }
 }
 

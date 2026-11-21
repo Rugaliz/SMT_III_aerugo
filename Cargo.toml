@@ -6,6 +6,8 @@ members = [
     "crates/gfx",
     "crates/unity",
     "crates/sim",
+    "crates/ui",
+    "crates/audio",
 ]
 default-members = ["crates/aerugo"]
 
@@ -23,12 +25,15 @@ aerugo-platform = { path = "crates/platform" }
 aerugo-gfx = { path = "crates/gfx" }
 aerugo-unity = { path = "crates/unity" }
 aerugo-sim = { path = "crates/sim" }
+aerugo-ui = { path = "crates/ui" }
+aerugo-audio = { path = "crates/audio" }
 
 # external (licences checked by deny.toml)
 anyhow = "1.0"
 ash = "0.38"
 bytemuck = { version = "1.25", features = ["derive"] }
 env_logger = "0.11"
+lewton = { version = "0.10", default-features = false }
 gpu-allocator = { version = "0.28", default-features = false, features = ["std", "vulkan"] }
 log = "0.4"
 lz4_flex = { version = "0.11", default-features = false, features = ["std"] }

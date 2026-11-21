@@ -1,0 +1,169 @@
+//! Turning the visible part of a [`UiTree`] into textured quads.
+
+use crate::color::Color32;
+use crate::math::Affine;
+use crate::prefab::TextureRef;
+use crate::tree::{Image, NodeId, UiTree};
+
+/// The root canvas size in canvas units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Canvas {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Canvas {
+    /// The size the original's screens are designed for.
+    pub const DESIGN: Canvas = Canvas { width: 1920.0, height: 1080.0 };
+}
+
+/// One quad in canvas units (origin at the canvas center, y up). Corners are in triangle-strip order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiQuad {
+    /// `None`: untextured (a plain white texture).
+    pub texture: Option<TextureRef>,
+    pub pos: [[f32; 2]; 4],
+    /// Texture coordinates with v up (row 0 of the stored texture is v = 0).
+    pub uv: [[f32; 2]; 4],
+    pub color: Color32,
+}
+
+impl UiTree {
+    /// Quads for every shown, enabled image, in drawing order (parents before children, siblings in order).
+    pub fn draw_list(&self) -> Vec<UiQuad> {
+        let mut out = Vec::new();
+        self.visit(self.root(), Affine::IDENTITY, &mut out);
+        out
+    }
+
+    fn visit(&self, id: NodeId, parent: Affine, out: &mut Vec<UiQuad>) {
+        let n = self.node(id);
+        if !n.active_self {
+            return;
+        }
+        let (rect, to_parent) = self.layout(id);
+        let m = parent.mul(&to_parent);
+        if let Some(img) = &n.image
+            && img.enabled
+            && let Some(q) = self.image_quad(img, rect, n.transform.pivot, &m)
+        {
+            out.push(q);
+        }
+        for &c in &n.children {
+            self.visit(c, m, out);
+        }
+    }
+
+    /// Mesh of a simple image: the node rectangle (shrunk by the sprite's transparent padding, optionally
+    /// fitted to the sprite's aspect ratio) textured with the sprite's stored rectangle.
+    fn image_quad(&self, img: &Image, rect: [f32; 4], pivot: [f32; 2], m: &Affine) -> Option<UiQuad> {
+        let color = Color32::from(img.color);
+        let corner = |x: f32, y: f32| {
+            let p = m.apply([x, y, 0.0]);
+            [p[0], p[1]]
+        };
+        let Some(si) = img.sprite else {
+            // No sprite: the plain rectangle, texture coordinates 0..1.
+            let [x, y, w, h] = rect;
+            return Some(UiQuad {
+                texture: None,
+                pos: [corner(x, y), corner(x, y + h), corner(x + w, y), corner(x + w, y + h)],
+                uv: [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]],
+                color,
+            });
+        };
+        if img.kind != 0 || img.use_sprite_mesh {
+            log::warn!("image kind {} (sprite mesh {}) is not drawn yet", img.kind, img.use_sprite_mesh);
+            return None;
+        }
+        let s = &self.sprites[si];
+        let pad = s.padding();
+        let size = [s.rect[2], s.rect[3]];
+        let (sw, sh) = (size[0].round_ties_even(), size[1].round_ties_even());
+        let v = [pad[0] / sw, pad[1] / sh, (sw - pad[2]) / sw, (sh - pad[3]) / sh];
+        let mut r = rect;
+        if img.preserve_aspect && size[0] * size[0] + size[1] * size[1] > 0.0 {
+            preserve_aspect(&mut r, size, pivot);
+        }
+        let d = [r[0] + r[2] * v[0], r[1] + r[3] * v[1], r[0] + r[2] * v[2], r[1] + r[3] * v[3]];
+        let uv = s.outer_uv();
+        Some(UiQuad {
+            texture: Some(s.texture.clone()),
+            pos: [corner(d[0], d[1]), corner(d[0], d[3]), corner(d[2], d[1]), corner(d[2], d[3])],
+            uv: [[uv[0], uv[1]], [uv[0], uv[3]], [uv[2], uv[1]], [uv[2], uv[3]]],
+            color,
+        })
+    }
+}
+
+/// Shrink `r` to the sprite's aspect ratio, keeping the pivot point in place.
+fn preserve_aspect(r: &mut [f32; 4], sprite_size: [f32; 2], pivot: [f32; 2]) {
+    let ratio = sprite_size[0] / sprite_size[1];
+    if r[2] / r[3] < ratio {
+        let old_h = r[3];
+        r[3] = r[2] * (1.0 / ratio);
+        r[1] += (old_h - r[3]) * pivot[1];
+    } else {
+        let old_w = r[2];
+        r[2] = r[3] * ratio;
+        r[0] += (old_w - r[2]) * pivot[0];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::prefab::{Prefab, PrefabNode};
+    use crate::tree::{RectTransform, Sprite};
+    use aerugo_unity::ObjRef;
+
+    fn logo_prefab() -> Prefab {
+        let rt = RectTransform { size_delta: [1920.0, 1080.0], ..Default::default() };
+        let mut root = PrefabNode::new("logo_root", None, vec![1], rt);
+        root.active = true;
+        let mut img = PrefabNode::new("logo", Some(0), vec![], rt);
+        img.active = false;
+        img.image = Some(Image {
+            enabled: true,
+            color: Color::WHITE,
+            sprite: Some(0),
+            kind: 0,
+            preserve_aspect: false,
+            use_sprite_mesh: false,
+        });
+        let sprite = Sprite {
+            texture: TextureRef { bundle: "b".into(), obj: ObjRef { node: 0, path_id: 7 } },
+            texture_size: [1920.0, 1080.0],
+            rect: [0.0, 0.0, 1920.0, 1080.0],
+            texture_rect: [0.0, 0.0, 1920.0, 1080.0],
+            texture_rect_offset: [0.0, 0.0],
+        };
+        Prefab { nodes: vec![root, img], sprites: vec![sprite] }
+    }
+
+    #[test]
+    fn full_screen_logo_covers_the_canvas() {
+        let mut ui = UiTree::new("canvas", Canvas::DESIGN);
+        let root = ui.instantiate(&logo_prefab(), ui.root());
+        assert!(ui.draw_list().is_empty(), "the logo starts hidden");
+        let logo = ui.find(root, "logo").unwrap();
+        ui.set_active(logo, true);
+        ui.set_image_color(logo, Color::new(255.0, 255.0, 255.0, 0.5));
+        let q = ui.draw_list();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].pos, [[-960.0, -540.0], [-960.0, 540.0], [960.0, -540.0], [960.0, 540.0]]);
+        assert_eq!(q[0].uv, [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        assert_eq!(q[0].color, Color32([255, 255, 255, 128]));
+    }
+
+    #[test]
+    fn aspect_is_preserved_around_the_pivot() {
+        let mut r = [-100.0, -100.0, 200.0, 200.0];
+        preserve_aspect(&mut r, [2.0, 1.0], [0.5, 0.5]);
+        assert_eq!(r, [-100.0, -50.0, 200.0, 100.0]);
+        let mut r = [0.0, 0.0, 200.0, 100.0];
+        preserve_aspect(&mut r, [1.0, 1.0], [0.0, 0.0]);
+        assert_eq!(r, [0.0, 0.0, 100.0, 100.0]);
+    }
+}

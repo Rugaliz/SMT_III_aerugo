@@ -36,16 +36,26 @@ Requirements:
 
 ```sh
 cargo run --release -- --game "/path/to/smt3hd"
+cargo run --release -- --game "/path/to/smt3hd" --lang ja                    # language (default en)
 ```
+
+The game currently boots into its opening: the Atlus logo plays, then the port stops where the opening movie
+would start.
 
 Useful while developing:
 
 ```sh
 cargo run --release -- --game "/path/to/smt3hd" view-texture title t_logo   # show one texture
 cargo run --release -- --vsync                                              # cap to the display rate
+AERUGO_CAPTURE=40:logo.ppm cargo run --release -- --game "/path/to/smt3hd"  # save the frame at tick 40
 ```
 
 `F11` toggles fullscreen.
+
+## Licences of dependencies
+
+Every dependency of the runtime is under a permissive licence (MIT, Apache-2.0, BSD, Zlib); `cargo deny` checks
+this. Where no such decoder exists for a format the game uses, Aerugo has its own.
 
 ## Legal
 

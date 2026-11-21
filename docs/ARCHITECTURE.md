@@ -8,15 +8,26 @@
 | `aerugo-platform` | SDL3 window and events, keyboard and gamepad input, audio output |
 | `aerugo-gfx` | Vulkan: instance, device, swapchain, frames in flight, sprites, textures |
 | `aerugo-unity` | Reading the game's Unity asset bundles: bundles, serialized files, object values, textures |
-| `aerugo-sim` | Game logic: fixed tick, the process scheduler and per-tick kernel, random numbers; more systems as they are implemented |
+| `aerugo-ui` | The game's 2D interface: object trees loaded from the UI assets, anchor layout on the 1920x1080 canvas, image quads |
+| `aerugo-audio` | The game's sound banks: FSB5 reading, Vorbis setup headers from the installation, decoding to PCM |
+| `aerugo-sim` | Game logic: fixed tick, the process scheduler and per-tick kernel, sequences, the fade, the title; more systems as they are implemented |
 
 ### Dependency rules
 
 - Format readers do no rendering and no window work.
 - Game logic (`aerugo-sim`) never depends on graphics, audio or the window. It is deterministic and
   testable without a GPU.
+- Game logic talks to the screen through small traits in its own terms (show the logo, move the title
+  graphics). The executable implements them on top of `aerugo-ui`, which is the only place that knows how
+  the original's UI assets are laid out.
 - `unsafe` code is limited to `aerugo-gfx` and `aerugo-platform`. Every `unsafe` block carries a
   `SAFETY:` comment.
+
+## Screen: the 16:9 canvas
+
+The original lays its 2D screens out on a 1920x1080 canvas and always shows a 16:9 picture. Aerugo does the
+same for now: the canvas is scaled to the largest 16:9 area of the window, with bars on wider or narrower
+windows. Using the full width of ultrawide displays is planned.
 
 ## Time: fixed tick, interpolated frames
 
