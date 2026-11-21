@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "aerugo-audio",
  "aerugo-gfx",
+ "aerugo-media",
  "aerugo-platform",
  "aerugo-sim",
  "aerugo-ui",
@@ -38,6 +39,14 @@ dependencies = [
  "gpu-allocator",
  "log",
  "sdl3",
+]
+
+[[package]]
+name = "aerugo-media"
+version = "0.1.0"
+dependencies = [
+ "aerugo-unity",
+ "anyhow",
 ]
 
 [[package]]

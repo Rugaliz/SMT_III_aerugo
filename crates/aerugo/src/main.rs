@@ -9,6 +9,7 @@
 
 mod assets;
 mod game;
+mod movie;
 mod sound;
 mod title_view;
 mod ui_render;
@@ -26,8 +27,9 @@ use sdl3::keyboard::Scancode;
 
 use crate::assets::Assets;
 use crate::game::{Game, Language};
+use crate::movie::MoviePlayer;
 use crate::title_view::TitleScreens;
-use crate::ui_render::UiRenderer;
+use crate::ui_render::{UiRenderer, canvas_area};
 
 #[derive(Debug)]
 struct Args {
@@ -151,7 +153,8 @@ fn main() -> Result<()> {
         sound.mixer.lock().play(clip.pcm, play);
     }
     let mut ui_renderer = UiRenderer::new(assets.clone());
-    let mut game = Game::new(TitleScreens::new(assets), args.language);
+    let movies = MoviePlayer::new(assets.clone(), sound.mixer.clone());
+    let mut game = Game::new(TitleScreens::new(assets), movies, args.language);
     let mut kernel: Kernel<Game> = Kernel::new();
     if view.is_none() {
         game.boot(&mut kernel);
@@ -170,6 +173,7 @@ fn main() -> Result<()> {
                 PlatformEvent::Key(_) => {}
             }
         }
+        game.movies.update();
         let steps = clock.advance();
         for _ in 0..steps.ticks {
             let _edges = platform.input.latch();
@@ -177,7 +181,19 @@ fn main() -> Result<()> {
         }
         let sprites = match &view {
             Some(v) => v.sprites(&gfx),
-            None => ui_renderer.sprites(&mut gfx, &game.screens.ui, game.fade.layer())?,
+            None => {
+                // The movie is drawn under the whole UI, over the canvas area.
+                let a = canvas_area(gfx.extent(), game.screens.ui.canvas);
+                let area = [
+                    a[0] * 2.0 - 1.0,
+                    a[1] * 2.0 - 1.0,
+                    (a[0] + a[2]) * 2.0 - 1.0,
+                    (a[1] + a[3]) * 2.0 - 1.0,
+                ];
+                let mut sprites: Vec<Sprite> = game.movies.sprite(&mut gfx, area)?.into_iter().collect();
+                sprites.extend(ui_renderer.sprites(&mut gfx, &game.screens.ui, game.fade.layer())?);
+                sprites
+            }
         };
         if capture_path.is_none() && captures.first().is_some_and(|(t, _)| kernel.frame_count() >= *t) {
             capture_path = Some(captures.remove(0).1);

@@ -5,6 +5,7 @@
 
 pub mod fade;
 pub mod kernel;
+pub mod movie;
 pub mod process;
 pub mod rng;
 pub mod sequence;
@@ -14,6 +15,7 @@ pub mod title;
 
 pub use fade::{Fade, FadeHost};
 pub use kernel::{Kernel, KernelHost};
+pub use movie::{MovieBackend, MovieHost, MovieManager, MovieRequest};
 pub use process::{FlagScope, ProcessFn, ProcessHost, ProcessId, Scheduler, State};
 pub use rng::{LocalTime, Rng};
 pub use sequence::{SequenceHooks, SequenceHost};

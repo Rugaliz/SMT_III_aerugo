@@ -4,7 +4,7 @@ use std::process::Command;
 
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    for name in ["sprite.vert", "sprite.frag"] {
+    for name in ["sprite.vert", "sprite.frag", "video.frag"] {
         let src = format!("shaders/{name}");
         println!("cargo:rerun-if-changed={src}");
         let status = Command::new("glslc")

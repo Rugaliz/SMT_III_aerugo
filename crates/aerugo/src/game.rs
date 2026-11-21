@@ -1,9 +1,11 @@
 //! The game context shared by every process, and the boot sequence.
 
+use aerugo_sim::movie::{MovieBackend, MovieHost, MovieManager};
 use aerugo_sim::sequence::{self, SequenceHooks, SequenceHost};
-use aerugo_sim::title::{self, Movies, Title, TitleHost, TitleView};
+use aerugo_sim::title::{self, Title, TitleHost, TitleView};
 use aerugo_sim::{Fade, FadeHost, Kernel, KernelHost, ProcessHost, Rng};
 
+use crate::movie::MoviePlayer;
 use crate::title_view::TitleScreens;
 
 /// Seed of the game's random generator at boot.
@@ -50,22 +52,6 @@ impl Language {
     }
 }
 
-/// Movie playback is not implemented yet: requests are logged.
-#[derive(Debug, Default)]
-pub struct MovieStub {
-    pub playing: Option<i32>,
-}
-
-impl Movies for MovieStub {
-    fn play(&mut self, id: i32) {
-        log::warn!("movie {id:#x}: playback is not implemented yet");
-        self.playing = Some(id);
-    }
-    fn stop(&mut self) {
-        self.playing = None;
-    }
-}
-
 /// State shared by every game process.
 #[derive(Debug)]
 pub struct Game {
@@ -75,19 +61,21 @@ pub struct Game {
     pub fade: Fade,
     pub title: Title,
     pub screens: TitleScreens,
-    pub movies: MovieStub,
+    pub movie: MovieManager,
+    pub movies: MoviePlayer,
     pub language: Language,
 }
 
 impl Game {
-    pub fn new(screens: TitleScreens, language: Language) -> Self {
+    pub fn new(screens: TitleScreens, movies: MoviePlayer, language: Language) -> Self {
         Self {
             input_enabled: false,
             rng: Rng::default(),
             fade: Fade::new(),
             title: Title::default(),
             screens,
-            movies: MovieStub::default(),
+            movie: MovieManager::new(),
+            movies,
             language,
         }
     }
@@ -132,9 +120,6 @@ impl TitleHost for Game {
     fn title_view(&mut self) -> &mut dyn TitleView {
         &mut self.screens
     }
-    fn movies(&mut self) -> &mut dyn Movies {
-        &mut self.movies
-    }
     fn pad_press(&self, _button: u32) -> bool {
         // The mapping from keys and buttons to the game's pad is not ported yet.
         false
@@ -148,5 +133,24 @@ impl TitleHost for Game {
     }
     fn sound_fade_out(&mut self, id: u32) {
         log::debug!("sound fade out {id:#x}: sound is not implemented yet");
+    }
+    fn play_se(&mut self, id: u32) {
+        log::debug!("sound effect {id:#x}: sound effects are not implemented yet");
+    }
+    fn ui_shown(&self, _layer: i32) -> bool {
+        // The kernel's UI display check is not ported: reported as hidden, so steps waiting on it hold.
+        false
+    }
+}
+
+impl MovieHost for Game {
+    fn movie(&mut self) -> &mut MovieManager {
+        &mut self.movie
+    }
+    fn movie_backend(&mut self) -> &mut dyn MovieBackend {
+        &mut self.movies
+    }
+    fn language_id(&self) -> usize {
+        self.language as usize
     }
 }

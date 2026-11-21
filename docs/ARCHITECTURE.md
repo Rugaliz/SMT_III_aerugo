@@ -10,7 +10,8 @@
 | `aerugo-unity` | Reading the game's Unity asset bundles: bundles, serialized files, object values, textures |
 | `aerugo-ui` | The game's 2D interface: object trees loaded from the UI assets, anchor layout on the 1920x1080 canvas, image quads |
 | `aerugo-audio` | The game's sound banks: FSB5 reading, Vorbis setup headers from the installation, decoding to PCM |
-| `aerugo-sim` | Game logic: fixed tick, the process scheduler and per-tick kernel, sequences, the fade, the title; more systems as they are implemented |
+| `aerugo-media` | The game's movies: ASF demuxing, WMV3 video and WMA v2 audio decoders, background decoding for playback |
+| `aerugo-sim` | Game logic: fixed tick, the process scheduler and per-tick kernel, sequences, the fade, the movie manager, the title; more systems as they are implemented |
 
 ### Dependency rules
 

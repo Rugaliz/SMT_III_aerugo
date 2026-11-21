@@ -8,6 +8,7 @@ members = [
     "crates/sim",
     "crates/ui",
     "crates/audio",
+    "crates/media",
 ]
 default-members = ["crates/aerugo"]
 
@@ -27,6 +28,7 @@ aerugo-unity = { path = "crates/unity" }
 aerugo-sim = { path = "crates/sim" }
 aerugo-ui = { path = "crates/ui" }
 aerugo-audio = { path = "crates/audio" }
+aerugo-media = { path = "crates/media" }
 
 # external (licences checked by deny.toml)
 anyhow = "1.0"

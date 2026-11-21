@@ -39,8 +39,8 @@ cargo run --release -- --game "/path/to/smt3hd"
 cargo run --release -- --game "/path/to/smt3hd" --lang ja                    # language (default en)
 ```
 
-The game currently boots into its opening: the Atlus logo plays, then the port stops where the opening movie
-would start.
+The game currently boots into its opening: the Atlus logo, the opening movie and the press-start movie, then it
+loops back to the logos with the alternate opening. The title name over the movies and the main menu come next.
 
 Useful while developing:
 

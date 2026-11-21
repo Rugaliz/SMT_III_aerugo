@@ -1,9 +1,11 @@
 //! The title sequence: company logo, opening movie, title screen and main menu.
 //!
-//! Ported so far: entering and leaving the sequence and the opening steps up to the start of the opening
-//! movie (optional warning screen, fade from black, the Atlus logo and its fade-out). Later steps hold.
+//! Ported so far: entering and leaving the sequence, the opening steps (optional warning screen, fade from
+//! black, the Atlus logo and its fade-out), the opening movies and the press-start movie with its loop back
+//! to the logos. The title name drawing over the movies and the main menu are not ported yet; those steps hold.
 
 use crate::fade::FadeHost;
+use crate::movie::{self, MovieHost};
 use crate::process::{ProcessFn, ProcessId, Scheduler};
 use crate::sequence::{CallData, SequenceHooks};
 
@@ -47,18 +49,10 @@ pub trait TitleView {
     fn set_warning_shown(&mut self, shown: bool);
 }
 
-/// Movie playback as the title uses it.
-pub trait Movies {
-    /// Start movie `id`.
-    fn play(&mut self, id: i32);
-    fn stop(&mut self);
-}
-
 /// What the title needs from the game.
-pub trait TitleHost: FadeHost + Sized {
+pub trait TitleHost: FadeHost + MovieHost + Sized + 'static {
     fn title(&mut self) -> &mut Title;
     fn title_view(&mut self) -> &mut dyn TitleView;
-    fn movies(&mut self) -> &mut dyn Movies;
     /// Logical pad button `button` is held.
     fn pad_press(&self, button: u32) -> bool;
     /// Language group of the current language.
@@ -67,7 +61,18 @@ pub trait TitleHost: FadeHost + Sized {
     fn dlc2_installed(&self) -> bool;
     /// Start fading out the current background music (`id` selects the fade).
     fn sound_fade_out(&mut self, id: u32);
+    /// Play sound effect `id`.
+    fn play_se(&mut self, id: u32);
+    /// Whether UI layer `layer` is being displayed.
+    fn ui_shown(&self, layer: i32) -> bool;
 }
+
+/// Movie frame after which the alternate opening movie hands over to the title name (step 9).
+const OPENING_NAME_FRAME: i32 = 0xA92;
+/// Sound effect of confirming on the title screen.
+const SE_TITLE_CONFIRM: u32 = 0x3A_0001;
+/// Movie ids the title plays.
+const MOVIE_PRESS_START: i32 = 0x12;
 
 /// Title state.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -100,6 +105,8 @@ pub struct Title {
     pub start_logo_anim: i32,
     /// Steps not ported yet were reached (reported once).
     unported_reported: bool,
+    /// The title name drawing was reached (reported once).
+    name_sprite_reported: bool,
 }
 
 /// Start hook of the title sequence. `data` may carry an `i32` mode.
@@ -116,7 +123,7 @@ pub fn start<C: TitleHost>(ctx: &mut C, s: &mut Scheduler<C>, _back: bool, data:
 /// lead out of the title, not here.
 pub fn end<C: TitleHost>(ctx: &mut C, s: &mut Scheduler<C>) -> i32 {
     if ctx.title().pos != 8 {
-        ctx.movies().stop();
+        movie::stop(ctx, s);
     }
     s.kill_by_name(ctx, PROCESS_NAME, 1);
     0
@@ -164,7 +171,7 @@ fn init<C: TitleHost>(ctx: &mut C, s: &mut Scheduler<C>, mode: i32) {
     if common {
         ctx.sound_fade_out(0x3A_0000);
         ctx.fade().fade_in_from_current(15);
-        ctx.movies().stop();
+        movie::stop(ctx, s);
         let t = ctx.title();
         t.back_alpha = 0x80;
         t.cnt = 0;
@@ -173,6 +180,17 @@ fn init<C: TitleHost>(ctx: &mut C, s: &mut Scheduler<C>, mode: i32) {
     }
     s.start(PROCESS_NAME, PRIORITY, 0, 0, Some(ProcessFn(run::<C>)), None, None);
     ctx.title_view().load();
+}
+
+/// The title name over the movies (logo, subtitle, copyright, "press start"), driven by `logo_cnt`.
+/// Not ported yet: the title graphics stay parked.
+fn draw_name_sprite<C: TitleHost>(ctx: &mut C) {
+    let t = ctx.title();
+    if t.logo_cnt == -1 || t.name_sprite_reported {
+        return;
+    }
+    t.name_sprite_reported = true;
+    log::warn!("the title name drawing is not ported yet");
 }
 
 fn any_skip_pressed<C: TitleHost>(ctx: &C) -> bool {
@@ -185,7 +203,7 @@ fn next(t: &mut Title) {
     t.step += 1;
 }
 
-fn run<C: TitleHost>(ctx: &mut C, _: &mut Scheduler<C>, _: ProcessId) -> Option<ProcessFn<C>> {
+fn run<C: TitleHost>(ctx: &mut C, s: &mut Scheduler<C>, _: ProcessId) -> Option<ProcessFn<C>> {
     if ctx.title_view().menu_loaded() && !ctx.title().title_set_up {
         let v = ctx.title_view();
         v.set_title_shown(true);
@@ -206,7 +224,7 @@ fn run<C: TitleHost>(ctx: &mut C, _: &mut Scheduler<C>, _: ProcessId) -> Option<
         2 => {
             ctx.fade().fade_in(0, 0, 0, 20);
             next(ctx.title());
-            ctx.movies().stop();
+            movie::stop(ctx, s);
         }
         3 => {
             let v = ctx.title_view();
@@ -217,7 +235,7 @@ fn run<C: TitleHost>(ctx: &mut C, _: &mut Scheduler<C>, _: ProcessId) -> Option<
             v.set_atlus_logo_color([255.0, 255.0, 255.0, 1.0]);
             if !ctx.fade().is_fading() {
                 next(ctx.title());
-                ctx.movies().stop();
+                movie::stop(ctx, s);
             }
         }
         4 | 7 => {
@@ -284,7 +302,7 @@ fn run<C: TitleHost>(ctx: &mut C, _: &mut Scheduler<C>, _: ProcessId) -> Option<
                     0x1A
                 }
             };
-            ctx.movies().play(movie);
+            movie::play(ctx, s, movie);
             let t = ctx.title();
             t.opening_count += 1;
             next(t);
@@ -292,6 +310,141 @@ fn run<C: TitleHost>(ctx: &mut C, _: &mut Scheduler<C>, _: ProcessId) -> Option<
             if v.rd_logo_shown() {
                 v.set_rd_logo_shown(false);
             }
+        }
+        9 => {
+            // The alternate opening hands over to the title name near its end; the step check below can still
+            // move on to 0x18.
+            if movie::frame(ctx) > OPENING_NAME_FRAME && ctx.title().movie_id == 1 {
+                let t = ctx.title();
+                t.logo_cnt = 0;
+                t.press_fade_in_cnt = 0;
+                t.cnt = 0;
+                t.movie_title_init = 0;
+                t.step += 1;
+            }
+            if movie::check_end(ctx) == 0 {
+                if !any_skip_pressed(ctx) {
+                    return None;
+                }
+                ctx.fade().fade_out(255, 255, 255, 15);
+                let t = ctx.title();
+                t.cnt = 0;
+                t.movie_title_init = 1;
+                t.start_logo_anim = 1;
+            } else {
+                let t = ctx.title();
+                t.cnt = 0;
+                t.logo_cnt = -1;
+            }
+            ctx.title().step = 0x18;
+        }
+        10 => {
+            draw_name_sprite(ctx);
+            let ended = movie::check_end(ctx) != 0;
+            if !ended {
+                if !any_skip_pressed(ctx) {
+                    return None;
+                }
+                ctx.fade().fade_out(0, 0, 0, 15);
+                ctx.play_se(SE_TITLE_CONFIRM);
+                let t = ctx.title();
+                t.cnt = 0;
+                t.step = 0xB;
+                return None;
+            }
+            ctx.fade().fade_out(0, 0, 0, 15);
+            ctx.title().cnt = 0;
+            if ctx.title().movie_id == 0 {
+                movie::stop(ctx, s);
+                movie::play(ctx, s, MOVIE_PRESS_START);
+            }
+            ctx.title().step = 0xD;
+        }
+        0xB | 0x18 => {
+            if ctx.fade().is_fading() {
+                return None;
+            }
+            movie::stop(ctx, s);
+            next(ctx.title());
+        }
+        0xD => {
+            draw_name_sprite(ctx);
+            if ctx.title().cnt > 14 {
+                if movie::check_end(ctx) == 0 {
+                    return None;
+                }
+                movie::stop(ctx, s);
+                let t = ctx.title();
+                t.cnt = 0;
+                t.step = 2;
+            } else {
+                ctx.title().cnt += 1;
+            }
+        }
+        0xE => {
+            ctx.fade().fade_in_from_current(15);
+            let t = ctx.title();
+            t.back_alpha = 0x80;
+            t.cnt = 0;
+            t.press_fade_in_cnt = 0;
+            t.step += 1;
+            t.logo_cnt = 0xC0;
+            t.press_fade_in_cnt = 0x32;
+        }
+        0xF => {
+            draw_name_sprite(ctx);
+            ctx.title().cnt += 1;
+            if ctx.fade().is_fading() {
+                return None;
+            }
+            next(ctx.title());
+        }
+        0x10 => {
+            draw_name_sprite(ctx);
+            // The original also requires a decoder frame counter of 0 here; nothing ever changes it from 0.
+            if movie::check_end(ctx) != 0 {
+                let t = ctx.title();
+                t.movie_title_init = 0;
+                t.start_logo_anim = 0;
+                movie::stop(ctx, s);
+                ctx.fade().fade_out(0, 0, 0, 15);
+                let t = ctx.title();
+                t.cnt = 0;
+                t.step = 0xD;
+                return None;
+            }
+            ctx.title().cnt += 1;
+            if !any_skip_pressed(ctx) || !ctx.ui_shown(0) {
+                return None;
+            }
+            ctx.fade().fade_out(0, 0, 0, 15);
+            ctx.play_se(SE_TITLE_CONFIRM);
+            let t = ctx.title();
+            t.cnt = 0;
+            t.step = 0x11;
+        }
+        0x11 => {
+            draw_name_sprite(ctx);
+            if ctx.title().cnt == 0x10 {
+                movie::stop(ctx, s);
+            }
+            if ctx.title().cnt > 0x11 {
+                let t = ctx.title();
+                t.cnt = 0;
+                t.step = 0xC;
+            } else {
+                ctx.title().cnt += 1;
+            }
+        }
+        0x19 => {
+            ctx.title().cnt += 1;
+            if ctx.title().cnt < 6 {
+                return None;
+            }
+            movie::play(ctx, s, MOVIE_PRESS_START);
+            let t = ctx.title();
+            t.cnt = 0;
+            t.step = 0xE;
         }
         0x24 => {
             let v = ctx.title_view();
@@ -397,13 +550,32 @@ mod tests {
     #[derive(Default)]
     struct Player {
         played: Vec<i32>,
+        playing: bool,
+        frame: Option<i64>,
     }
 
-    impl Movies for Player {
-        fn play(&mut self, id: i32) {
-            self.played.push(id);
+    impl crate::movie::MovieBackend for Player {
+        fn load_bundle(&mut self, _: &str) {}
+        fn bundle_loaded(&self, _: &str) -> bool {
+            true
         }
-        fn stop(&mut self) {}
+        fn unload_bundle(&mut self, _: &str) {}
+        fn create(&mut self, req: &crate::movie::MovieRequest) {
+            self.played.push(req.id);
+            self.playing = true;
+        }
+        fn is_prepared(&self) -> bool {
+            true
+        }
+        fn is_playing(&self) -> bool {
+            self.playing
+        }
+        fn frame(&self) -> Option<i64> {
+            self.frame
+        }
+        fn release(&mut self) {
+            self.playing = false;
+        }
     }
 
     #[derive(Default)]
@@ -412,6 +584,7 @@ mod tests {
         fade: Fade,
         view: View,
         movies: Player,
+        movie: crate::movie::MovieManager,
         language: i32,
         pressed: bool,
     }
@@ -433,9 +606,6 @@ mod tests {
         fn title_view(&mut self) -> &mut dyn TitleView {
             &mut self.view
         }
-        fn movies(&mut self) -> &mut dyn Movies {
-            &mut self.movies
-        }
         fn pad_press(&self, _: u32) -> bool {
             self.pressed
         }
@@ -446,6 +616,22 @@ mod tests {
             false
         }
         fn sound_fade_out(&mut self, _: u32) {}
+        fn play_se(&mut self, _: u32) {}
+        fn ui_shown(&self, _: i32) -> bool {
+            true
+        }
+    }
+
+    impl MovieHost for Ctx {
+        fn movie(&mut self) -> &mut crate::movie::MovieManager {
+            &mut self.movie
+        }
+        fn movie_backend(&mut self) -> &mut dyn crate::movie::MovieBackend {
+            &mut self.movies
+        }
+        fn language_id(&self) -> usize {
+            1
+        }
     }
 
     /// One tick: the title process, then the drawing process that advances the fade.
@@ -454,7 +640,7 @@ mod tests {
     }
 
     fn boot(language: i32) -> (Ctx, Scheduler<Ctx>) {
-        let mut ctx = Ctx { language, ..Default::default() };
+        let mut ctx = Ctx { language, movie: crate::movie::MovieManager::new(), ..Default::default() };
         let mut s = Scheduler::new();
         crate::fade::start_draw_process(&mut s);
         start(&mut ctx, &mut s, false, None);
@@ -499,9 +685,33 @@ mod tests {
         while ctx.title.step == 8 {
             tick(&mut ctx, &mut s);
         }
-        assert_eq!(ctx.movies.played, vec![0x17]);
         assert_eq!(ctx.title.movie_id, 0);
         assert_eq!(ctx.title.step, 9);
+        // The movie process starts a tick late, loads the bundle, then creates the player.
+        for _ in 0..3 {
+            tick(&mut ctx, &mut s);
+        }
+        assert_eq!(ctx.movies.played, vec![0x17]);
+        // The opening ends: step 0x18 waits for the fade, stops the movie, and after 6 ticks the press-start
+        // movie starts.
+        ctx.movies.playing = false;
+        while ctx.title.step != 0xE {
+            tick(&mut ctx, &mut s);
+        }
+        assert_eq!(ctx.movie.playing, 0x12);
+        while ctx.title.step != 0x10 {
+            tick(&mut ctx, &mut s);
+        }
+        for _ in 0..3 {
+            tick(&mut ctx, &mut s);
+        }
+        assert_eq!(ctx.movies.played, vec![0x17, 0x12]);
+        // When it ends the title fades out and starts over from the logos.
+        ctx.movies.playing = false;
+        while ctx.title.step != 2 {
+            tick(&mut ctx, &mut s);
+        }
+        assert_eq!(ctx.movie.playing, -1);
     }
 
     #[test]

@@ -13,6 +13,10 @@ use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc,
 };
 
+mod video;
+
+pub use video::VideoId;
+
 const FRAMES_IN_FLIGHT: usize = 2;
 
 #[derive(Clone, Copy, Debug)]
@@ -99,6 +103,8 @@ pub struct Gfx {
     sampler: vk::Sampler,
     desc_pool: vk::DescriptorPool,
     textures: Vec<GpuTexture>,
+    videos: Vec<video::VideoTarget>,
+    video_pipeline: Option<video::VideoPipeline>,
     pub vsync: bool,
     pub present_mode: vk::PresentModeKHR,
     want_extent: (u32, u32),
@@ -289,6 +295,8 @@ impl Gfx {
             sampler: vk::Sampler::null(),
             desc_pool: vk::DescriptorPool::null(),
             textures: vec![],
+            videos: vec![],
+            video_pipeline: None,
             vsync,
             present_mode: vk::PresentModeKHR::FIFO,
             want_extent: (w, h),
@@ -932,6 +940,7 @@ impl Drop for Gfx {
         // SAFETY: `Drop` waits for the device to be idle, then destroys objects in reverse creation order.
         unsafe {
             let _ = self.device.device_wait_idle();
+            self.destroy_videos();
             for t in self.textures.drain(..) {
                 self.device.destroy_image_view(t.view, None);
                 self.device.destroy_image(t.image, None);
