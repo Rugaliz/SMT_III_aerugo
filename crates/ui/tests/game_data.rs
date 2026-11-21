@@ -50,3 +50,37 @@ fn title_menu_prefab_loads() {
         assert!(ui.find(root, path).is_some(), "{path} missing");
     }
 }
+
+#[test]
+fn press_start_animation_drives_its_sprites() {
+    let Some(ar) = bundle("common") else {
+        eprintln!("AERUGO_GAME_DIR not set, skipping");
+        return;
+    };
+    let p = Prefab::load(&ar, "common", "Assets/AssetBundle/AssetData/dds3data/UI/titleUI.prefab").unwrap();
+    let mut ui = UiTree::new("Canvas_UI", Canvas::DESIGN);
+    let root = ui.instantiate(&p, ui.root());
+    // The title group starts inactive; the title shows it when it loads.
+    let title = ui.find(root, "title").expect("title node");
+    ui.set_active(title, true);
+    let press = ui.find(root, "title/title_press").expect("press node");
+    let alpha =
+        |ui: &UiTree, path: &str| ui.node(ui.find(press, path).unwrap()).image.as_ref().unwrap().color.a;
+    assert!(ui.animator_enabled(press));
+    // The 2-second loop: base and text pulse 0.5 -> 1 -> 0.5; the glow rises to 1 at 1.17 s and fades out.
+    ui.animator_play(press, "title_press", 0.0);
+    ui.advance_animators(0.0);
+    assert_eq!(alpha(&ui, "title_press_base"), 0.5);
+    assert_eq!(alpha(&ui, "titletex_pressg"), 0.0);
+    assert_eq!(alpha(&ui, "title_press_base02"), 0.0);
+    ui.advance_animators(1.0);
+    assert_eq!(alpha(&ui, "title_press_base"), 1.0);
+    assert_eq!(alpha(&ui, "titletex_press"), 1.0);
+    ui.advance_animators(0.5);
+    assert!(alpha(&ui, "titletex_pressg") < 1.0);
+    // Disabled and enabled again without keeping its state: it starts over.
+    ui.set_animator_enabled(press, false);
+    ui.set_animator_enabled(press, true);
+    ui.advance_animators(0.0);
+    assert_eq!(alpha(&ui, "title_press_base"), 0.5);
+}

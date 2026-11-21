@@ -2,7 +2,7 @@
 //!
 //! Ported so far: entering and leaving the sequence, the opening steps (optional warning screen, fade from
 //! black, the Atlus logo and its fade-out), the opening movies and the press-start movie with its loop back
-//! to the logos. The title name drawing over the movies and the main menu are not ported yet; those steps hold.
+//! to the logos, with the title name drawn over the movies. The main menu is not ported yet; its steps hold.
 
 use crate::fade::FadeHost;
 use crate::movie::{self, MovieHost};
@@ -47,7 +47,36 @@ pub trait TitleView {
     fn set_rd_logo_shown(&mut self, shown: bool);
     fn warning_shown(&self) -> bool;
     fn set_warning_shown(&mut self, shown: bool);
+    /// Tint of title sprite `index` (see [`TITLE_SPRITES`]); channels may exceed 1 and are clamped when drawn.
+    fn set_title_sprite_color(&mut self, index: usize, rgba: [f32; 4]);
+    /// The "press start" animator.
+    fn press_anim_enabled(&self) -> bool;
+    fn set_press_anim_enabled(&mut self, enabled: bool);
+    /// Play the "press start" animator's state `state` from normalized time `t`.
+    fn play_press_anim(&mut self, state: &str, t: f32);
 }
+
+/// The title sprites, in the order the title addresses them (paths below the menu screen).
+pub const TITLE_SPRITES: [&str; 7] = [
+    "title/title_logo",
+    "title/title_Subtitle/Image",
+    "title/title_copyright",
+    "title/title_press/title_press_base",
+    "title/title_press/title_press_base02",
+    "title/title_press/titletex_press",
+    "title/title_press/titletex_pressg",
+];
+/// The object carrying the "press start" animator.
+pub const PRESS_ANIMATOR: &str = "title/title_press";
+/// Animator state started when "press start" appears.
+const PRESS_STATE: &str = "title_press";
+/// Ticks of the title name fade-in.
+const NAME_FADE_TICKS: i32 = 12;
+/// `press_fade_in_cnt` at which "press start" appears.
+const PRESS_START: i32 = 0x32;
+/// Copyright fade: its counter saturates after this many ticks, and its alpha is the 0..128 level over this.
+const COPYRIGHT_FADE_TICKS: i32 = 150;
+const COPYRIGHT_ALPHA_DIVISOR: f32 = 60.0;
 
 /// What the title needs from the game.
 pub trait TitleHost: FadeHost + MovieHost + Sized + 'static {
@@ -105,8 +134,6 @@ pub struct Title {
     pub start_logo_anim: i32,
     /// Steps not ported yet were reached (reported once).
     unported_reported: bool,
-    /// The title name drawing was reached (reported once).
-    name_sprite_reported: bool,
 }
 
 /// Start hook of the title sequence. `data` may carry an `i32` mode.
@@ -182,15 +209,54 @@ fn init<C: TitleHost>(ctx: &mut C, s: &mut Scheduler<C>, mode: i32) {
     ctx.title_view().load();
 }
 
-/// The title name over the movies (logo, subtitle, copyright, "press start"), driven by `logo_cnt`.
-/// Not ported yet: the title graphics stay parked.
+/// The title name over the movies: logo and subtitle fade in over 12 ticks, then "press start" and the
+/// copyright appear. Driven by `logo_cnt` (-1: not shown).
 fn draw_name_sprite<C: TitleHost>(ctx: &mut C) {
-    let t = ctx.title();
-    if t.logo_cnt == -1 || t.name_sprite_reported {
+    if ctx.title().logo_cnt == -1 {
         return;
     }
-    t.name_sprite_reported = true;
-    log::warn!("the title name drawing is not ported yet");
+    if ctx.title().start_logo_anim == 0 {
+        let v = ctx.title_view();
+        if v.press_anim_enabled() {
+            v.set_press_anim_enabled(false);
+        }
+    }
+    ctx.title_view().set_title_position([0.0, 0.0, 0.0]);
+    if ctx.title().movie_title_init == 0 {
+        let v = ctx.title_view();
+        v.set_press_anim_enabled(false);
+        for i in 0..TITLE_SPRITES.len() {
+            v.set_title_sprite_color(i, [255.0, 255.0, 255.0, 0.0]);
+        }
+        ctx.title().movie_title_init = 1;
+    }
+    // (The original also steps a sine phase here whose result is never used.)
+    let n = ctx.title().logo_cnt.min(NAME_FADE_TICKS);
+    let a = ((n << 7) / NAME_FADE_TICKS) as f32 * (1.0 / 128.0);
+    let v = ctx.title_view();
+    v.set_title_sprite_color(0, [255.0, 255.0, 255.0, a]);
+    v.set_title_sprite_color(1, [255.0, 255.0, 255.0, a]);
+    if ctx.title().logo_cnt > NAME_FADE_TICKS {
+        draw_logo_sprite(ctx);
+    }
+    ctx.title().logo_cnt += 1;
+}
+
+/// "Press start" (animated) and the copyright, from `press_fade_in_cnt` 0x32 on.
+fn draw_logo_sprite<C: TitleHost>(ctx: &mut C) {
+    ctx.title().press_fade_in_cnt += 1;
+    let c = ctx.title().press_fade_in_cnt;
+    let v = ctx.title_view();
+    if c < PRESS_START {
+        v.set_press_anim_enabled(false);
+        return;
+    }
+    v.set_press_anim_enabled(true);
+    if c == PRESS_START {
+        v.play_press_anim(PRESS_STATE, 0.0);
+    }
+    let level = ((c - PRESS_START).min(COPYRIGHT_FADE_TICKS) << 7) / COPYRIGHT_FADE_TICKS;
+    v.set_title_sprite_color(2, [255.0, 255.0, 255.0, level as f32 / COPYRIGHT_ALPHA_DIVISOR]);
 }
 
 fn any_skip_pressed<C: TitleHost>(ctx: &C) -> bool {
@@ -506,6 +572,9 @@ mod tests {
         atlus_color: [f32; 4],
         rd: bool,
         warning: bool,
+        sprite_colors: [[f32; 4]; 7],
+        press_anim: bool,
+        press_played: Vec<String>,
     }
 
     impl TitleView for View {
@@ -544,6 +613,18 @@ mod tests {
         }
         fn set_warning_shown(&mut self, shown: bool) {
             self.warning = shown;
+        }
+        fn set_title_sprite_color(&mut self, index: usize, rgba: [f32; 4]) {
+            self.sprite_colors[index] = rgba;
+        }
+        fn press_anim_enabled(&self) -> bool {
+            self.press_anim
+        }
+        fn set_press_anim_enabled(&mut self, enabled: bool) {
+            self.press_anim = enabled;
+        }
+        fn play_press_anim(&mut self, state: &str, _: f32) {
+            self.press_played.push(state.to_string());
         }
     }
 
@@ -702,6 +783,13 @@ mod tests {
         while ctx.title.step != 0x10 {
             tick(&mut ctx, &mut s);
         }
+        // The title name is unparked and fully shown at once (the counters start past their fades): "press
+        // start" is animated without being restarted, and the copyright fades in.
+        assert_eq!(ctx.view.title_pos, [0.0, 0.0, 0.0]);
+        assert_eq!(ctx.view.sprite_colors[0][3], 1.0);
+        assert!(ctx.view.press_anim);
+        assert!(ctx.view.press_played.is_empty());
+        assert!(ctx.view.sprite_colors[2][3] > 0.0);
         for _ in 0..3 {
             tick(&mut ctx, &mut s);
         }
@@ -712,6 +800,36 @@ mod tests {
             tick(&mut ctx, &mut s);
         }
         assert_eq!(ctx.movie.playing, -1);
+    }
+
+    #[test]
+    fn alternate_opening_fades_the_name_in() {
+        let (mut ctx, mut s) = boot(1);
+        // Second time round the opening is the alternate movie.
+        ctx.title.opening_count = 1;
+        while ctx.title.step != 9 {
+            tick(&mut ctx, &mut s);
+        }
+        assert_eq!(ctx.title.movie_id, 1);
+        for _ in 0..3 {
+            tick(&mut ctx, &mut s);
+        }
+        assert_eq!(ctx.movies.played, vec![0x18]);
+        // Near its end the title name takes over: fade over 12 ticks, "press start" starts 0x32 counts later.
+        ctx.movies.frame = Some(i64::from(OPENING_NAME_FRAME) + 1);
+        tick(&mut ctx, &mut s);
+        assert_eq!(ctx.title.step, 10);
+        for _ in 0..6 {
+            tick(&mut ctx, &mut s);
+        }
+        let a = ctx.view.sprite_colors[0][3];
+        assert!(a > 0.0 && a < 1.0, "half-way through the fade: {a}");
+        while ctx.view.press_played.is_empty() {
+            tick(&mut ctx, &mut s);
+            assert!(ctx.title.logo_cnt < 200, "press start never started");
+        }
+        assert_eq!(ctx.view.press_played, vec!["title_press".to_string()]);
+        assert_eq!(ctx.title.press_fade_in_cnt, PRESS_START);
     }
 
     #[test]

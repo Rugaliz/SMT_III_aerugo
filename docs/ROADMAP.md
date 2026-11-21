@@ -22,7 +22,7 @@
 - [x] Movies: WMV3 (VC-1) video decoder of our own (every frame of all 37 movies checked)
 - [x] Movie player: background decoding, sound through the movie group, frames converted on the GPU
 - [x] Title: opening movies, press-start movie and the loop back to the logos
-- [ ] Title name over the movies
+- [x] Title name over the movies, "press start" animation
 - [ ] Title screen and main menu
 - [ ] The UI brightness/contrast material the original applies to its screens
 

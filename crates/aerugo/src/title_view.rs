@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use aerugo_sim::title::TitleView;
+use aerugo_sim::title::{PRESS_ANIMATOR, TITLE_SPRITES, TitleView};
 use aerugo_ui::{Canvas, Color, NodeId, UiTree};
 
 use crate::assets::Assets;
@@ -21,6 +21,8 @@ struct Loaded {
     atlus: Option<NodeId>,
     rd: Option<NodeId>,
     warning: Option<NodeId>,
+    sprites: [Option<NodeId>; 7],
+    press: Option<NodeId>,
 }
 
 #[derive(Debug)]
@@ -74,7 +76,14 @@ impl TitleView for TitleScreens {
             atlus: self.ui.find(atlus_root, "atluslogo"),
             rd: self.ui.find(rd_root, "rdlogo"),
             warning: self.ui.find(menu, "WarningState"),
+            sprites: TITLE_SPRITES.map(|p| self.ui.find(menu, p)),
+            press: self.ui.find(menu, PRESS_ANIMATOR),
         });
+        for (i, p) in TITLE_SPRITES.iter().enumerate() {
+            if self.loaded.is_some_and(|l| l.sprites[i].is_none()) {
+                log::error!("title sprite {p} not found");
+            }
+        }
     }
 
     fn unload(&mut self) {
@@ -127,5 +136,27 @@ impl TitleView for TitleScreens {
 
     fn set_warning_shown(&mut self, shown: bool) {
         self.set_shown(self.loaded.and_then(|l| l.warning), shown);
+    }
+
+    fn set_title_sprite_color(&mut self, index: usize, [r, g, b, a]: [f32; 4]) {
+        if let Some(n) = self.loaded.and_then(|l| l.sprites[index]) {
+            self.ui.set_image_color(n, Color::new(r, g, b, a));
+        }
+    }
+
+    fn press_anim_enabled(&self) -> bool {
+        self.loaded.and_then(|l| l.press).is_some_and(|n| self.ui.animator_enabled(n))
+    }
+
+    fn set_press_anim_enabled(&mut self, enabled: bool) {
+        if let Some(n) = self.loaded.and_then(|l| l.press) {
+            self.ui.set_animator_enabled(n, enabled);
+        }
+    }
+
+    fn play_press_anim(&mut self, state: &str, t: f32) {
+        if let Some(n) = self.loaded.and_then(|l| l.press) {
+            self.ui.animator_play(n, state, t);
+        }
     }
 }

@@ -7,6 +7,7 @@ use aerugo_unity::{Archive, ObjRef, ReadOpts, SerializedFile, ValueReader};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
+use crate::anim::AnimatorDef;
 use crate::color::Color;
 use crate::tree::{Image, RectTransform, Sprite};
 
@@ -26,11 +27,20 @@ pub struct PrefabNode {
     pub children: Vec<usize>,
     pub transform: RectTransform,
     pub image: Option<Image>,
+    pub animator: Option<Rc<AnimatorDef>>,
 }
 
 impl PrefabNode {
     pub fn new(name: &str, parent: Option<usize>, children: Vec<usize>, transform: RectTransform) -> Self {
-        Self { name: name.to_string(), active: true, parent, children, transform, image: None }
+        Self {
+            name: name.to_string(),
+            active: true,
+            parent,
+            children,
+            transform,
+            image: None,
+            animator: None,
+        }
     }
 }
 
@@ -163,6 +173,7 @@ impl Loader<'_, '_> {
             children: Vec::new(),
             transform: RectTransform::default(),
             image: None,
+            animator: None,
         });
         let mut children = Vec::new();
         for c in go["m_Component"].as_array().into_iter().flatten() {
@@ -177,6 +188,11 @@ impl Loader<'_, '_> {
                         }
                     }
                 }
+                "Animator" => match self.animator(&cv) {
+                    Ok(def) => self.prefab.nodes[index].animator = Some(Rc::new(def)),
+                    // Animations of other properties than image colors are not supported yet.
+                    Err(e) => log::warn!("{}: animator of {name} skipped: {e:#}", self.bundle),
+                },
                 "MonoBehaviour" if self.script_name(&cv)?.as_deref() == Some("Image") => {
                     let img = self.image(&cv).with_context(|| format!("image of {name}"))?;
                     self.prefab.nodes[index].image = Some(img);
@@ -191,6 +207,25 @@ impl Loader<'_, '_> {
             self.prefab.nodes[index].children.push(child);
         }
         Ok(index)
+    }
+
+    /// An animator component with its controller and clips (all in this file).
+    fn animator(&self, v: &Value) -> Result<AnimatorDef> {
+        let cid = local_ref(&v["m_Controller"])?.context("animator without controller")?;
+        let (class, controller) = self.file.read(cid)?;
+        if class != "AnimatorController" {
+            bail!("controller {cid} is a {class}");
+        }
+        let mut clips = Vec::new();
+        for r in controller["m_AnimationClips"].as_array().into_iter().flatten() {
+            let id = local_ref(r)?.context("null animation clip")?;
+            let (class, clip) = self.file.read(id)?;
+            if class != "AnimationClip" {
+                bail!("clip {id} is a {class}");
+            }
+            clips.push(clip);
+        }
+        AnimatorDef::load(v, &controller, &clips)
     }
 
     /// Class name of a component's script, if the script is in this file.

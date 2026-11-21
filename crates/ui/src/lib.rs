@@ -5,6 +5,7 @@
 //! turns the visible images into textured quads ([`UiTree::draw_list`]). Game logic changes the tree through
 //! small operations (show or hide an object, move it, tint an image) and never sees the asset format.
 
+pub mod anim;
 mod color;
 mod draw;
 mod math;

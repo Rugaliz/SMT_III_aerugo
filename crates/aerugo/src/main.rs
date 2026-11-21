@@ -162,6 +162,7 @@ fn main() -> Result<()> {
     let mut captures = capture_requests()?;
     let mut capture_path: Option<PathBuf> = None;
     let mut clock = FixedTimestep::new();
+    let mut last_frame = Instant::now();
     let (mut frames, mut fps_t) = (0u32, Instant::now());
     'main: loop {
         for e in platform.poll() {
@@ -174,11 +175,16 @@ fn main() -> Result<()> {
             }
         }
         game.movies.update();
+        let now = Instant::now();
+        let frame_dt = now.duration_since(last_frame).as_secs_f32();
+        last_frame = now;
         let steps = clock.advance();
         for _ in 0..steps.ticks {
             let _edges = platform.input.latch();
             kernel.tick(&mut game);
         }
+        // UI animations run in real time, between and across ticks.
+        game.screens.ui.advance_animators(frame_dt);
         let sprites = match &view {
             Some(v) => v.sprites(&gfx),
             None => {

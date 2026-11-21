@@ -1,5 +1,6 @@
 //! The UI object tree: what exists, what is shown, and where.
 
+use crate::anim::{AnimatorState, ColorChannel, crc32};
 use crate::color::Color;
 use crate::draw::Canvas;
 use crate::math::Affine;
@@ -96,6 +97,7 @@ pub struct Node {
     pub children: Vec<NodeId>,
     pub transform: RectTransform,
     pub image: Option<Image>,
+    pub animator: Option<AnimatorState>,
     alive: bool,
 }
 
@@ -117,6 +119,7 @@ impl UiTree {
             children: Vec::new(),
             transform: RectTransform::default(),
             image: None,
+            animator: None,
             alive: true,
         };
         Self { nodes: vec![root], sprites: Vec::new(), canvas }
@@ -154,6 +157,7 @@ impl UiTree {
                 children: n.children.iter().map(|&c| NodeId(base + c as u32)).collect(),
                 transform: n.transform,
                 image,
+                animator: n.animator.clone().map(AnimatorState::new),
                 alive: true,
             });
             debug_assert_eq!(self.nodes.len() as u32, base + i as u32 + 1);
@@ -235,6 +239,69 @@ impl UiTree {
         let t = &mut self.node_mut(id).transform;
         t.local_position = p;
         t.anchored_position = [p[0] - reference[0], p[1] - reference[1]];
+    }
+
+    pub fn animator_enabled(&self, id: NodeId) -> bool {
+        self.node(id).animator.as_ref().is_some_and(|a| a.enabled)
+    }
+
+    pub fn set_animator_enabled(&mut self, id: NodeId, enabled: bool) {
+        if let Some(a) = &mut self.node_mut(id).animator {
+            a.set_enabled(enabled);
+        }
+    }
+
+    /// Play the animator's state `state` from normalized time `t`.
+    pub fn animator_play(&mut self, id: NodeId, state: &str, t: f32) {
+        if let Some(a) = &mut self.node_mut(id).animator {
+            a.play(crc32(state.as_bytes()), t);
+        }
+    }
+
+    /// Advance every enabled, active animator by `dt` seconds and write its values to the images it drives.
+    pub fn advance_animators(&mut self, dt: f32) {
+        let ids: Vec<NodeId> = (0..self.nodes.len() as u32)
+            .map(NodeId)
+            .filter(|&id| self.nodes[id.0 as usize].alive && self.nodes[id.0 as usize].animator.is_some())
+            .collect();
+        for id in ids {
+            if !self.active_in_hierarchy(id) {
+                continue;
+            }
+            let Some(a) = &mut self.node_mut(id).animator else { continue };
+            if !a.enabled {
+                continue;
+            }
+            a.advance(dt);
+            let values = a.sample();
+            let bindings = a.def.clip.bindings.clone();
+            for (b, v) in bindings.iter().zip(values) {
+                let Some(target) = self.find_by_path_hash(id, b.path) else { continue };
+                if let Some(img) = &mut self.node_mut(target).image {
+                    match b.channel {
+                        ColorChannel::R => img.color.r = v,
+                        ColorChannel::G => img.color.g = v,
+                        ColorChannel::B => img.color.b = v,
+                        ColorChannel::A => img.color.a = v,
+                    }
+                }
+            }
+        }
+    }
+
+    /// The node below `id` whose path relative to `id` ("child/grandchild") hashes to `hash`.
+    fn find_by_path_hash(&self, id: NodeId, hash: u32) -> Option<NodeId> {
+        let mut stack: Vec<(NodeId, String)> =
+            self.node(id).children.iter().map(|&c| (c, self.node(c).name.clone())).collect();
+        while let Some((n, path)) = stack.pop() {
+            if crc32(path.as_bytes()) == hash {
+                return Some(n);
+            }
+            for &c in &self.node(n).children {
+                stack.push((c, format!("{path}/{}", self.node(c).name)));
+            }
+        }
+        None
     }
 
     pub fn set_image_color(&mut self, id: NodeId, c: Color) {
