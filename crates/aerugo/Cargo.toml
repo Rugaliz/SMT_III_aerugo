@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 aerugo-gfx.workspace = true
 aerugo-platform.workspace = true
 aerugo-sim.workspace = true

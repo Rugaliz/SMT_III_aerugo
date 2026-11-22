@@ -2,7 +2,7 @@
 
 /// A 3D affine transform: `p' = m * p + t` (column vectors).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Affine {
+pub struct Affine {
     pub m: [[f32; 3]; 3],
     pub t: [f32; 3],
 }
@@ -36,6 +36,23 @@ impl Affine {
             }
         }
         Affine { m, t: self.apply(o.t) }
+    }
+
+    /// The inverse transform (identity for a singular one).
+    pub fn inverse(&self) -> Affine {
+        let m = self.m;
+        let c = |r0: usize, c0: usize, r1: usize, c1: usize| m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0];
+        let det = m[0][0] * c(1, 1, 2, 2) - m[0][1] * c(1, 0, 2, 2) + m[0][2] * c(1, 0, 2, 1);
+        if det.abs() < 1e-12 {
+            return Affine::IDENTITY;
+        }
+        let im = [
+            [c(1, 1, 2, 2) / det, -c(0, 1, 2, 2) / det, c(0, 1, 1, 2) / det],
+            [-c(1, 0, 2, 2) / det, c(0, 0, 2, 2) / det, -c(0, 0, 1, 2) / det],
+            [c(1, 0, 2, 1) / det, -c(0, 0, 2, 1) / det, c(0, 0, 1, 1) / det],
+        ];
+        let t = [0, 1, 2].map(|i| -(im[i][0] * self.t[0] + im[i][1] * self.t[1] + im[i][2] * self.t[2]));
+        Affine { m: im, t }
     }
 
     pub fn apply(&self, p: [f32; 3]) -> [f32; 3] {

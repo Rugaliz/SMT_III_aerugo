@@ -4,6 +4,7 @@
 pub mod archive;
 pub mod bundle;
 pub mod reader;
+pub mod resources;
 pub mod serialized;
 pub mod typetree;
 

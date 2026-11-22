@@ -3,13 +3,28 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use aerugo_sim::title::{PRESS_ANIMATOR, TITLE_SPRITES, TitleView};
+use aerugo_sim::title::{MENU_ITEMS, PRESS_ANIMATOR, TITLE_SPRITES, TitleView};
 use aerugo_ui::{Canvas, Color, NodeId, UiTree};
 
 use crate::assets::Assets;
 
 /// Name of the root UI canvas in the original scene.
 pub const ROOT_CANVAS: &str = "Canvas_UI";
+/// The main menu group and its parts (paths below the menu screen).
+const MENU_GROUP: &str = "titlemain";
+const MENU_CURSOR: &str = "titlemain/titlemain_cursur";
+const MENU_NAME_WINDOW: &str = "titlemain/namechoice";
+fn menu_item(n: usize) -> String {
+    format!("titlemain/titlemainmenu/stretch/titlemain_item{n:02}")
+}
+fn menu_item_text(n: usize) -> String {
+    format!("{}/slide/Text_TM", menu_item(n))
+}
+fn menu_note(n: usize) -> String {
+    format!("titlemain/titlemain_note/Text_mainnote{n:02}TM")
+}
+/// Help line objects.
+const MENU_NOTES: usize = 5;
 
 /// Handles into the screens once loaded.
 #[derive(Debug, Clone, Copy)]
@@ -23,6 +38,12 @@ struct Loaded {
     warning: Option<NodeId>,
     sprites: [Option<NodeId>; 7],
     press: Option<NodeId>,
+    menu_group: Option<NodeId>,
+    items: [Option<NodeId>; MENU_ITEMS],
+    item_texts: [Option<NodeId>; MENU_ITEMS],
+    notes: [Option<NodeId>; MENU_NOTES],
+    cursor: Option<NodeId>,
+    name_window: Option<NodeId>,
 }
 
 #[derive(Debug)]
@@ -57,6 +78,13 @@ impl TitleScreens {
     fn shown(&self, node: Option<NodeId>) -> bool {
         node.is_some_and(|n| self.ui.active_self(n))
     }
+
+    /// Object `n` (1-based) of one of the menu's numbered lists.
+    fn item<const N: usize>(&self, n: i32, list: impl Fn(&Loaded) -> &[Option<NodeId>; N]) -> Option<NodeId> {
+        let l = self.loaded.as_ref()?;
+        let i = usize::try_from(n).ok()?.checked_sub(1)?;
+        list(l).get(i).copied().flatten()
+    }
 }
 
 impl TitleView for TitleScreens {
@@ -78,7 +106,25 @@ impl TitleView for TitleScreens {
             warning: self.ui.find(menu, "WarningState"),
             sprites: TITLE_SPRITES.map(|p| self.ui.find(menu, p)),
             press: self.ui.find(menu, PRESS_ANIMATOR),
+            menu_group: self.ui.find(menu, MENU_GROUP),
+            items: std::array::from_fn(|i| self.ui.find(menu, &menu_item(i + 1))),
+            item_texts: std::array::from_fn(|i| self.ui.find(menu, &menu_item_text(i + 1))),
+            notes: std::array::from_fn(|i| self.ui.find(menu, &menu_note(i + 1))),
+            cursor: self.ui.find(menu, MENU_CURSOR),
+            name_window: self.ui.find(menu, MENU_NAME_WINDOW),
         });
+        if let Some(l) = self.loaded {
+            let missing = [l.menu_group, l.cursor, l.name_window]
+                .into_iter()
+                .chain(l.items)
+                .chain(l.item_texts)
+                .chain(l.notes)
+                .filter(Option::is_none)
+                .count();
+            if missing > 0 {
+                log::error!("{missing} main menu objects not found");
+            }
+        }
         for (i, p) in TITLE_SPRITES.iter().enumerate() {
             if self.loaded.is_some_and(|l| l.sprites[i].is_none()) {
                 log::error!("title sprite {p} not found");
@@ -158,5 +204,55 @@ impl TitleView for TitleScreens {
         if let Some(n) = self.loaded.and_then(|l| l.press) {
             self.ui.animator_play(n, state, t);
         }
+    }
+
+    fn menu_shown(&self) -> bool {
+        self.shown(self.loaded.and_then(|l| l.menu_group))
+    }
+
+    fn set_menu_shown(&mut self, shown: bool) {
+        self.set_shown(self.loaded.and_then(|l| l.menu_group), shown);
+    }
+
+    fn menu_item_shown(&self, n: i32) -> bool {
+        self.shown(self.item(n, |l| &l.items))
+    }
+
+    fn set_menu_item_shown(&mut self, n: i32, shown: bool) {
+        self.set_shown(self.item(n, |l| &l.items), shown);
+    }
+
+    fn set_menu_item_text(&mut self, n: i32, text: &str) {
+        if let Some(id) = self.item(n, |l| &l.item_texts) {
+            self.ui.set_text(id, text);
+        }
+    }
+
+    fn menu_item_position(&self, n: i32) -> Option<[f32; 3]> {
+        self.item(n, |l| &l.items).map(|id| self.ui.position(id))
+    }
+
+    fn set_menu_cursor_position(&mut self, pos: [f32; 3]) {
+        if let Some(id) = self.loaded.and_then(|l| l.cursor) {
+            self.ui.set_position(id, pos);
+        }
+    }
+
+    fn set_menu_note_text(&mut self, n: i32, text: &str) -> bool {
+        match self.item(n, |l| &l.notes) {
+            Some(id) => {
+                self.ui.set_text(id, text);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn name_window_shown(&self) -> bool {
+        self.shown(self.loaded.and_then(|l| l.name_window))
+    }
+
+    fn set_name_window_shown(&mut self, shown: bool) {
+        self.set_shown(self.loaded.and_then(|l| l.name_window), shown);
     }
 }

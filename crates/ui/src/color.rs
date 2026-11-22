@@ -18,7 +18,7 @@ impl Color {
 }
 
 /// A color with byte channels: what image vertices carry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Color32(pub [u8; 4]);
 
 impl From<Color> for Color32 {

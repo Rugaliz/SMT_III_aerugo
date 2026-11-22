@@ -13,11 +13,13 @@ use gpu_allocator::vulkan::{
     Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc,
 };
 
+mod text;
 mod video;
 
+pub use text::{DrawItem, TextDraw, TextGlobals, TextVertex};
 pub use video::VideoId;
 
-const FRAMES_IN_FLIGHT: usize = 2;
+pub(crate) const FRAMES_IN_FLIGHT: usize = 2;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TextureId(pub usize);
@@ -105,6 +107,8 @@ pub struct Gfx {
     textures: Vec<GpuTexture>,
     videos: Vec<video::VideoTarget>,
     video_pipeline: Option<video::VideoPipeline>,
+    text: Option<text::TextPipeline>,
+    min_ubo_align: u64,
     pub vsync: bool,
     pub present_mode: vk::PresentModeKHR,
     want_extent: (u32, u32),
@@ -123,7 +127,7 @@ pub struct Capture {
     pub rgba: Vec<u8>,
 }
 
-fn spirv(bytes: &[u8]) -> Result<Vec<u32>> {
+pub(crate) fn spirv(bytes: &[u8]) -> Result<Vec<u32>> {
     Ok(ash::util::read_spv(&mut Cursor::new(bytes))?)
 }
 
@@ -268,6 +272,10 @@ impl Gfx {
         }
 
         let (w, h) = window.size_in_pixels();
+        // SAFETY: `pdev` was enumerated from this instance.
+        let min_ubo_align = unsafe { instance.get_physical_device_properties(pdev) }
+            .limits
+            .min_uniform_buffer_offset_alignment;
         let mut gfx = Self {
             _entry: entry,
             instance,
@@ -297,6 +305,8 @@ impl Gfx {
             textures: vec![],
             videos: vec![],
             video_pipeline: None,
+            text: None,
+            min_ubo_align,
             vsync,
             present_mode: vk::PresentModeKHR::FIFO,
             want_extent: (w, h),
@@ -307,6 +317,7 @@ impl Gfx {
         };
         gfx.create_swapchain()?;
         gfx.create_sprite_pipeline()?;
+        gfx.create_text_pipeline()?;
         Ok(gfx)
     }
 
@@ -701,8 +712,9 @@ impl Gfx {
         (self.sc.extent.width, self.sc.extent.height)
     }
 
-    /// Record and present one frame. Returns false if the frame was skipped (minimized / out of date).
-    pub fn render(&mut self, clear: [f32; 4], sprites: &[Sprite]) -> Result<bool> {
+    /// Record and present one frame: `items` in order. Returns false if the frame was skipped (minimized /
+    /// out of date).
+    pub fn render(&mut self, clear: [f32; 4], items: &[DrawItem]) -> Result<bool> {
         if self.want_extent.0 == 0 || self.want_extent.1 == 0 {
             return Ok(false);
         }
@@ -712,6 +724,9 @@ impl Gfx {
             self.create_swapchain()?;
             self.dirty = false;
         }
+        // SAFETY: the fence belongs to this device; once it signals, the frame's buffers are free to rewrite.
+        unsafe { self.device.wait_for_fences(&[self.frames[self.frame].fence], true, u64::MAX)? };
+        let text_ranges = self.prepare_text(items)?;
         let f = &self.frames[self.frame];
         let d = &self.device;
         // SAFETY: the frame's fence is waited on before its command buffer and semaphore are reused; every handle belongs to this device.
@@ -780,8 +795,29 @@ impl Gfx {
             };
             d.cmd_set_viewport(cmd, 0, &[vp]);
             d.cmd_set_scissor(cmd, 0, &[area]);
-            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
-            for s in sprites {
+            // Which pipeline is bound: false sprites, true text.
+            let mut bound: Option<bool> = None;
+            let mut text_ranges = text_ranges.into_iter();
+            for item in items {
+                let s = match item {
+                    DrawItem::Sprite(s) => s,
+                    DrawItem::Text(t) => {
+                        let Some(r) = text_ranges.next() else { continue };
+                        if r.count == 0 {
+                            continue;
+                        }
+                        if bound != Some(true) {
+                            self.bind_text(cmd);
+                            bound = Some(true);
+                        }
+                        self.record_text(cmd, t, r);
+                        continue;
+                    }
+                };
+                if bound != Some(false) {
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+                    bound = Some(false);
+                }
                 let t = &self.textures[s.tex.0];
                 d.cmd_bind_descriptor_sets(
                     cmd,
@@ -941,6 +977,7 @@ impl Drop for Gfx {
         unsafe {
             let _ = self.device.device_wait_idle();
             self.destroy_videos();
+            self.destroy_text_pipeline();
             for t in self.textures.drain(..) {
                 self.device.destroy_image_view(t.view, None);
                 self.device.destroy_image(t.image, None);

@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 
 #[derive(Debug)]
 pub struct Assets {
+    game: PathBuf,
     dir: PathBuf,
     bundles: HashMap<String, Archive>,
 }
@@ -16,7 +17,16 @@ pub struct Assets {
 impl Assets {
     /// `game` is the installation directory.
     pub fn new(game: &Path) -> Self {
-        Self { dir: game.join("smt3hd_Data/StreamingAssets/PC"), bundles: HashMap::new() }
+        Self {
+            game: game.to_path_buf(),
+            dir: game.join("smt3hd_Data/StreamingAssets/PC"),
+            bundles: HashMap::new(),
+        }
+    }
+
+    /// The installation directory.
+    pub fn game(&self) -> &Path {
+        &self.game
     }
 
     pub fn bundle(&mut self, name: &str) -> Result<&Archive> {
@@ -25,6 +35,13 @@ impl Assets {
             self.bundles.insert(name.to_string(), ar);
         }
         Ok(&self.bundles[name])
+    }
+
+    /// The opened bundle holding serialized file `file`, and the file's index in it.
+    pub fn opened_file(&self, file: &str) -> Option<(&str, usize)> {
+        self.bundles.iter().find_map(|(name, ar)| {
+            ar.bundle.nodes.iter().position(|n| n.path == file).map(|node| (name.as_str(), node))
+        })
     }
 
     /// The prefab `name` in folder `dir` of bundle `bundle`.

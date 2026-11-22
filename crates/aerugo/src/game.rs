@@ -1,10 +1,19 @@
 //! The game context shared by every process, and the boot sequence.
 
+use aerugo_sim::input::{self, Check, Keyboard, PadState};
 use aerugo_sim::movie::{MovieBackend, MovieHost, MovieManager};
 use aerugo_sim::sequence::{self, SequenceHooks, SequenceHost};
 use aerugo_sim::title::{self, Title, TitleHost, TitleView};
 use aerugo_sim::{Fade, FadeHost, Kernel, KernelHost, ProcessHost, Rng};
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use aerugo_ui::localize::Localize;
+
+use crate::assets::Assets;
+use crate::input::KeyFrame;
+use crate::messages;
 use crate::movie::MoviePlayer;
 use crate::title_view::TitleScreens;
 
@@ -64,10 +73,28 @@ pub struct Game {
     pub movie: MovieManager,
     pub movies: MoviePlayer,
     pub language: Language,
+    /// The keyboard's configuration and bound-key states.
+    pub keyboard: Keyboard,
+    /// The gamepad's button states.
+    pub pad: PadState,
+    /// The keys held this tick.
+    pub keys: KeyFrame,
+    /// The interface is displayed (the original's UI display flag; starts set).
+    pub ui_shown: bool,
+    /// The loaded message tables.
+    pub messages: Localize,
+    assets: Rc<RefCell<Assets>>,
 }
 
 impl Game {
-    pub fn new(screens: TitleScreens, movies: MoviePlayer, language: Language) -> Self {
+    pub fn new(
+        assets: Rc<RefCell<Assets>>,
+        screens: TitleScreens,
+        movies: MoviePlayer,
+        language: Language,
+        keys: KeyFrame,
+    ) -> Self {
+        let messages = messages::load_default(&mut assets.borrow_mut(), language as usize);
         Self {
             input_enabled: false,
             rng: Rng::default(),
@@ -77,7 +104,19 @@ impl Game {
             movie: MovieManager::new(),
             movies,
             language,
+            keyboard: Keyboard::new(),
+            pad: PadState::default(),
+            keys,
+            ui_shown: true,
+            messages,
+            assets,
         }
+    }
+
+    fn pad(&self, button: u32, check: Check) -> bool {
+        // The gamepad counts only for processes allowed to read the pad; the keyboard is read directly.
+        let pad = self.input_enabled.then_some(&self.pad);
+        input::pad_check(pad, &self.keyboard, &self.keys, button, 0, check)
     }
 
     /// Start the system processes, seed the random generator and enter the first sequence.
@@ -120,15 +159,38 @@ impl TitleHost for Game {
     fn title_view(&mut self) -> &mut dyn TitleView {
         &mut self.screens
     }
-    fn pad_press(&self, _button: u32) -> bool {
-        // The mapping from keys and buttons to the game's pad is not ported yet.
-        false
+    fn pad_press(&self, button: u32) -> bool {
+        self.pad(button, Check::Press)
+    }
+    fn pad_trigger(&self, button: u32) -> bool {
+        self.pad(button, Check::Trigger)
+    }
+    fn pad_repeat(&self, button: u32) -> bool {
+        self.pad(button, Check::Repeat)
+    }
+    fn localize(&self, id: &str) -> String {
+        self.messages.text(id)
+    }
+    fn load_messages(&mut self, key: &str, filename: &str) {
+        messages::load(
+            &mut self.assets.borrow_mut(),
+            &mut self.messages,
+            key,
+            filename,
+            self.language as usize,
+        );
+    }
+    fn remove_messages(&mut self, name: &str) {
+        self.messages.remove(name);
     }
     fn language_group(&self) -> i32 {
         self.language.group()
     }
     fn dlc2_installed(&self) -> bool {
         // Downloadable content detection is not implemented: none is installed.
+        false
+    }
+    fn dlc9_installed(&self) -> bool {
         false
     }
     fn sound_fade_out(&mut self, id: u32) {
@@ -138,7 +200,15 @@ impl TitleHost for Game {
         log::debug!("sound effect {id:#x}: sound effects are not implemented yet");
     }
     fn ui_shown(&self, _layer: i32) -> bool {
-        // The kernel's UI display check is not ported: reported as hidden, so steps waiting on it hold.
+        // The interface is shown unless hidden with its toggle (the toggle is not ported yet).
+        self.ui_shown
+    }
+    fn suspend_data_exists(&self) -> bool {
+        // Saved games are not read yet.
+        false
+    }
+    fn dlc_message_pending(&mut self) -> bool {
+        // Downloadable content detection is not implemented: none is installed.
         false
     }
 }

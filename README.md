@@ -40,7 +40,9 @@ cargo run --release -- --game "/path/to/smt3hd" --lang ja                    # l
 ```
 
 The game currently boots into its opening: the Atlus logo, the opening movie, then the title screen over the
-press-start movie, and it loops back to the logos with the alternate opening. The main menu comes next.
+press-start movie (skip and confirm with the keyboard or a gamepad), then the main menu over its background movie:
+the entries and their help text in the game's own fonts and distance-field shader, cursor movement, and cancel
+back to "press start". Choosing an entry fades out; what the entries do comes next.
 
 Useful while developing:
 

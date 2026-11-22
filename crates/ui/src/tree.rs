@@ -1,10 +1,12 @@
 //! The UI object tree: what exists, what is shown, and where.
 
-use crate::anim::{AnimatorState, ColorChannel, crc32};
+use crate::anim::{AnimatorState, ColorChannel, Property, crc32};
 use crate::color::Color;
 use crate::draw::Canvas;
+use crate::layout::{CanvasGroup, LayoutElement, LayoutGroup, SizeFitter};
 use crate::math::Affine;
 use crate::prefab::{Prefab, TextureRef};
+use crate::text::TextStyle;
 
 /// Handle to a node of a [`UiTree`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -76,6 +78,25 @@ impl Sprite {
     }
 }
 
+/// An object of a serialized file, named by the file (its node name inside its bundle).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AssetRef {
+    pub file: std::rc::Rc<str>,
+    pub path_id: i64,
+}
+
+/// A text component.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Text {
+    pub enabled: bool,
+    pub text: String,
+    pub style: TextStyle,
+    pub font: Option<AssetRef>,
+    pub material: Option<AssetRef>,
+    /// The object takes the current language's font when created.
+    pub change_font: bool,
+}
+
 /// A drawable image component.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Image {
@@ -97,7 +118,12 @@ pub struct Node {
     pub children: Vec<NodeId>,
     pub transform: RectTransform,
     pub image: Option<Image>,
+    pub text: Option<Text>,
     pub animator: Option<AnimatorState>,
+    pub canvas_group: Option<CanvasGroup>,
+    pub layout_group: Option<LayoutGroup>,
+    pub layout_element: Option<LayoutElement>,
+    pub size_fitter: Option<SizeFitter>,
     alive: bool,
 }
 
@@ -119,7 +145,12 @@ impl UiTree {
             children: Vec::new(),
             transform: RectTransform::default(),
             image: None,
+            text: None,
             animator: None,
+            canvas_group: None,
+            layout_group: None,
+            layout_element: None,
+            size_fitter: None,
             alive: true,
         };
         Self { nodes: vec![root], sprites: Vec::new(), canvas }
@@ -157,7 +188,12 @@ impl UiTree {
                 children: n.children.iter().map(|&c| NodeId(base + c as u32)).collect(),
                 transform: n.transform,
                 image,
+                text: n.text.clone(),
                 animator: n.animator.clone().map(AnimatorState::new),
+                canvas_group: n.canvas_group,
+                layout_group: n.layout_group.clone(),
+                layout_element: n.layout_element.clone(),
+                size_fitter: n.size_fitter.clone(),
                 alive: true,
             });
             debug_assert_eq!(self.nodes.len() as u32, base + i as u32 + 1);
@@ -206,8 +242,25 @@ impl UiTree {
         None
     }
 
+    /// Show or hide a node. Animators that become active start their default state over unless they keep
+    /// their state (as when the original enables an animator's object).
     pub fn set_active(&mut self, id: NodeId, active: bool) {
+        let was = self.active_in_hierarchy(id);
         self.node_mut(id).active_self = active;
+        if active && !was && self.active_in_hierarchy(id) {
+            let mut stack = vec![id];
+            while let Some(n) = stack.pop() {
+                if !self.node(n).active_self {
+                    continue;
+                }
+                if let Some(a) = &mut self.node_mut(n).animator
+                    && !a.def.keep_state_on_disable
+                {
+                    a.elapsed = 0.0;
+                }
+                stack.extend(self.node(n).children.iter().copied());
+            }
+        }
     }
 
     pub fn active_self(&self, id: NodeId) -> bool {
@@ -277,20 +330,37 @@ impl UiTree {
             let bindings = a.def.clip.bindings.clone();
             for (b, v) in bindings.iter().zip(values) {
                 let Some(target) = self.find_by_path_hash(id, b.path) else { continue };
-                if let Some(img) = &mut self.node_mut(target).image {
-                    match b.channel {
-                        ColorChannel::R => img.color.r = v,
-                        ColorChannel::G => img.color.g = v,
-                        ColorChannel::B => img.color.b = v,
-                        ColorChannel::A => img.color.a = v,
+                let node = self.node_mut(target);
+                match b.property {
+                    Property::ImageColor(channel) => {
+                        if let Some(img) = &mut node.image {
+                            match channel {
+                                ColorChannel::R => img.color.r = v,
+                                ColorChannel::G => img.color.g = v,
+                                ColorChannel::B => img.color.b = v,
+                                ColorChannel::A => img.color.a = v,
+                            }
+                        }
                     }
+                    Property::AnchoredX => node.transform.anchored_position[0] = v,
+                    Property::AnchoredY => node.transform.anchored_position[1] = v,
+                    Property::GroupAlpha => {
+                        if let Some(g) = &mut node.canvas_group {
+                            g.alpha = v;
+                        }
+                    }
+                    // Boolean curves hold 0 or 1.
+                    Property::Active => node.active_self = v > 0.5,
                 }
             }
         }
     }
 
-    /// The node below `id` whose path relative to `id` ("child/grandchild") hashes to `hash`.
+    /// The node at the path relative to `id` ("child/grandchild"; empty: `id` itself) that hashes to `hash`.
     fn find_by_path_hash(&self, id: NodeId, hash: u32) -> Option<NodeId> {
+        if crc32(b"") == hash {
+            return Some(id);
+        }
         let mut stack: Vec<(NodeId, String)> =
             self.node(id).children.iter().map(|&c| (c, self.node(c).name.clone())).collect();
         while let Some((n, path)) = stack.pop() {
@@ -304,10 +374,46 @@ impl UiTree {
         None
     }
 
+    /// Replace a text component's string (no effect on nodes without text).
+    pub fn set_text(&mut self, id: NodeId, s: &str) {
+        if let Some(t) = &mut self.nodes[id.0 as usize].text
+            && t.text != s
+        {
+            t.text = s.to_string();
+        }
+    }
+
+    pub fn text(&self, id: NodeId) -> Option<&Text> {
+        self.nodes[id.0 as usize].text.as_ref()
+    }
+
     pub fn set_image_color(&mut self, id: NodeId, c: Color) {
         if let Some(img) = &mut self.node_mut(id).image {
             img.color = c;
         }
+    }
+
+    /// Transform from a node's own space to the canvas.
+    pub fn to_canvas(&self, id: NodeId) -> Affine {
+        let mut chain = vec![id];
+        while let Some(p) = self.node(*chain.last().unwrap_or(&id)).parent {
+            chain.push(p);
+        }
+        chain.iter().rev().fold(Affine::IDENTITY, |m, &n| m.mul(&self.layout(n).1))
+    }
+
+    /// The node's pivot in canvas space (the original's world position on this canvas).
+    pub fn position(&self, id: NodeId) -> [f32; 3] {
+        self.to_canvas(id).apply([0.0; 3])
+    }
+
+    /// Move the node's pivot to `p` in canvas space.
+    pub fn set_position(&mut self, id: NodeId, p: [f32; 3]) {
+        let local = match self.node(id).parent {
+            Some(parent) => self.to_canvas(parent).inverse().apply(p),
+            None => p,
+        };
+        self.set_local_position(id, local);
     }
 
     /// The node's rectangle in its own space: x, y (bottom-left corner relative to the pivot), width, height.

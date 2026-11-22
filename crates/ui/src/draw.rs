@@ -1,9 +1,28 @@
 //! Turning the visible part of a [`UiTree`] into textured quads.
 
-use crate::color::Color32;
+use crate::color::{Color, Color32};
 use crate::math::Affine;
 use crate::prefab::TextureRef;
 use crate::tree::{Image, NodeId, UiTree};
+
+/// A text component to draw: the node, its rectangle in its local space, its transform to canvas units and
+/// its scale relative to the canvas (the product of the local y scales below the canvas).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiText {
+    pub node: NodeId,
+    pub rect: [f32; 4],
+    pub to_canvas: Affine,
+    pub scale_ratio: f32,
+    /// Alpha from the canvas groups above the text.
+    pub alpha: f32,
+}
+
+/// One drawing step of the tree, in order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiDraw {
+    Quad(UiQuad),
+    Text(UiText),
+}
 
 /// The root canvas size in canvas units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,28 +48,57 @@ pub struct UiQuad {
 }
 
 impl UiTree {
-    /// Quads for every shown, enabled image, in drawing order (parents before children, siblings in order).
-    pub fn draw_list(&self) -> Vec<UiQuad> {
+    /// Every shown, enabled image and text, in drawing order (parents before children, siblings in order).
+    pub fn draw_list(&self) -> Vec<UiDraw> {
         let mut out = Vec::new();
-        self.visit(self.root(), Affine::IDENTITY, &mut out);
+        self.visit(self.root(), Affine::IDENTITY, 1.0, 1.0, &mut out);
         out
     }
 
-    fn visit(&self, id: NodeId, parent: Affine, out: &mut Vec<UiQuad>) {
+    /// Only the image quads of [`draw_list`](Self::draw_list).
+    pub fn quads(&self) -> Vec<UiQuad> {
+        self.draw_list()
+            .into_iter()
+            .filter_map(|d| match d {
+                UiDraw::Quad(q) => Some(q),
+                UiDraw::Text(_) => None,
+            })
+            .collect()
+    }
+
+    fn visit(&self, id: NodeId, parent: Affine, parent_scale: f32, parent_alpha: f32, out: &mut Vec<UiDraw>) {
         let n = self.node(id);
         if !n.active_self {
             return;
         }
+        // Canvas groups multiply the alpha of everything below them (one ignoring its parents starts over).
+        let alpha = match &n.canvas_group {
+            Some(g) if g.enabled && g.ignore_parent_groups => g.alpha,
+            Some(g) if g.enabled => parent_alpha * g.alpha,
+            _ => parent_alpha,
+        };
         let (rect, to_parent) = self.layout(id);
         let m = parent.mul(&to_parent);
+        // The root is the canvas: its own scale is the canvas scale, not part of the ratio.
+        let scale = if id == self.root() { 1.0 } else { parent_scale * n.transform.local_scale[1] };
         if let Some(img) = &n.image
             && img.enabled
-            && let Some(q) = self.image_quad(img, rect, n.transform.pivot, &m)
+            && let Some(mut q) = self.image_quad(img, rect, n.transform.pivot, &m)
         {
-            out.push(q);
+            if alpha != 1.0 {
+                q.color =
+                    Color32::from(Color::new(img.color.r, img.color.g, img.color.b, img.color.a * alpha));
+            }
+            out.push(UiDraw::Quad(q));
+        }
+        if let Some(t) = &n.text
+            && t.enabled
+            && !t.text.is_empty()
+        {
+            out.push(UiDraw::Text(UiText { node: id, rect, to_canvas: m, scale_ratio: scale, alpha }));
         }
         for &c in &n.children {
-            self.visit(c, m, out);
+            self.visit(c, m, scale, alpha, out);
         }
     }
 
@@ -73,7 +121,10 @@ impl UiTree {
             });
         };
         if img.kind != 0 || img.use_sprite_mesh {
-            log::warn!("image kind {} (sprite mesh {}) is not drawn yet", img.kind, img.use_sprite_mesh);
+            static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::warn!("image kind {} (sprite mesh {}) is not drawn yet", img.kind, img.use_sprite_mesh);
+            }
             return None;
         }
         let s = &self.sprites[si];
@@ -146,11 +197,11 @@ mod tests {
     fn full_screen_logo_covers_the_canvas() {
         let mut ui = UiTree::new("canvas", Canvas::DESIGN);
         let root = ui.instantiate(&logo_prefab(), ui.root());
-        assert!(ui.draw_list().is_empty(), "the logo starts hidden");
+        assert!(ui.quads().is_empty(), "the logo starts hidden");
         let logo = ui.find(root, "logo").unwrap();
         ui.set_active(logo, true);
         ui.set_image_color(logo, Color::new(255.0, 255.0, 255.0, 0.5));
-        let q = ui.draw_list();
+        let q = ui.quads();
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].pos, [[-960.0, -540.0], [-960.0, 540.0], [960.0, -540.0], [960.0, 540.0]]);
         assert_eq!(q[0].uv, [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);

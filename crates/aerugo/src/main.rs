@@ -5,12 +5,17 @@
 //!          [view-texture <bundle> <asset path substring>] [play-sound <bundle>]
 //!
 //! The installation can also be given with `AERUGO_GAME_DIR`. `AERUGO_CAPTURE=<tick>:<file.ppm>[,...]` saves
-//! the frame shown at each listed game tick as a PPM image.
+//! the frame shown at each listed game tick as a PPM image. `AERUGO_KEYS=<tick>:<key>[,...]` presses a key (SDL
+//! scancode name, e.g. `Space`) for that one tick.
 
 mod assets;
 mod game;
+mod input;
+mod messages;
 mod movie;
+mod player_files;
 mod sound;
+mod text_render;
 mod title_view;
 mod ui_render;
 
@@ -19,9 +24,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
-use aerugo_gfx::{Gfx, Sprite, TextureId};
+use aerugo_gfx::{DrawItem, Gfx, Sprite, TextureId};
 use aerugo_platform::{Platform, PlatformEvent};
-use aerugo_sim::{FixedTimestep, Kernel};
+use aerugo_sim::{FixedTimestep, GAME_TICK_HZ, Kernel};
 use anyhow::{Context, Result, bail};
 use sdl3::keyboard::Scancode;
 
@@ -98,6 +103,19 @@ fn capture_requests() -> Result<Vec<(u32, PathBuf)>> {
     Ok(out)
 }
 
+/// Scripted key presses: (game tick, key), in tick order.
+fn key_script() -> Result<Vec<(u32, Scancode)>> {
+    let Ok(spec) = std::env::var("AERUGO_KEYS") else { return Ok(Vec::new()) };
+    let mut out = Vec::new();
+    for item in spec.split(',').filter(|s| !s.is_empty()) {
+        let (tick, key) = item.split_once(':').with_context(|| format!("AERUGO_KEYS item {item:?}"))?;
+        let sc = Scancode::from_name(key).with_context(|| format!("unknown key {key:?}"))?;
+        out.push((tick.parse().with_context(|| format!("tick in {item:?}"))?, sc));
+    }
+    out.sort_by_key(|(t, _)| *t);
+    Ok(out)
+}
+
 fn write_ppm(path: &std::path::Path, c: &aerugo_gfx::Capture) -> Result<()> {
     let mut data = format!("P6\n{} {}\n255\n", c.width, c.height).into_bytes();
     for px in c.rgba.chunks_exact(4) {
@@ -154,12 +172,20 @@ fn main() -> Result<()> {
     }
     let mut ui_renderer = UiRenderer::new(assets.clone());
     let movies = MoviePlayer::new(assets.clone(), sound.mixer.clone());
-    let mut game = Game::new(TitleScreens::new(assets), movies, args.language);
+    let layouts = input::load_layouts(&game_dir).unwrap_or_else(|e| {
+        log::error!("keyboard layouts: {e:#}");
+        Vec::new()
+    });
+    let layout = input::choose_layout(&layouts);
+    log::info!("keyboard layout table: {}", layout.map_or("none", |l| l.name.as_str()));
+    let keys = input::KeyFrame::new(layout);
+    let mut game = Game::new(assets.clone(), TitleScreens::new(assets), movies, args.language, keys);
     let mut kernel: Kernel<Game> = Kernel::new();
     if view.is_none() {
         game.boot(&mut kernel);
     }
     let mut captures = capture_requests()?;
+    let mut scripted_keys = key_script()?;
     let mut capture_path: Option<PathBuf> = None;
     let mut clock = FixedTimestep::new();
     let mut last_frame = Instant::now();
@@ -180,13 +206,26 @@ fn main() -> Result<()> {
         last_frame = now;
         let steps = clock.advance();
         for _ in 0..steps.ticks {
-            let _edges = platform.input.latch();
+            let (mut pressed_keys, _pressed_buttons) = platform.input.latch();
+            let mut held = platform.input.keys.clone();
+            while scripted_keys.first().is_some_and(|(t, _)| *t <= kernel.frame_count()) {
+                let (_, sc) = scripted_keys.remove(0);
+                log::info!("tick {}: scripted key {sc:?}", kernel.frame_count());
+                held.insert(sc);
+                pressed_keys.insert(sc);
+            }
+            game.keys.set(&held, &pressed_keys);
+            game.keyboard.update(&game.keys, 1.0 / GAME_TICK_HZ as f32);
+            game.pad.update(input::gamepad_bits(&platform.input.buttons, &platform.input.axes));
+            game.pad.update_sticks(input::sticks(&platform.input.axes));
             kernel.tick(&mut game);
         }
         // UI animations run in real time, between and across ticks.
         game.screens.ui.advance_animators(frame_dt);
-        let sprites = match &view {
-            Some(v) => v.sprites(&gfx),
+        // Layout groups place their children from the current sizes and visibility, as the engine does before drawing.
+        game.screens.ui.rebuild_layout();
+        let items: Vec<DrawItem> = match &view {
+            Some(v) => v.sprites(&gfx).into_iter().map(DrawItem::Sprite).collect(),
             None => {
                 // The movie is drawn under the whole UI, over the canvas area.
                 let a = canvas_area(gfx.extent(), game.screens.ui.canvas);
@@ -196,16 +235,18 @@ fn main() -> Result<()> {
                     (a[0] + a[2]) * 2.0 - 1.0,
                     (a[1] + a[3]) * 2.0 - 1.0,
                 ];
-                let mut sprites: Vec<Sprite> = game.movies.sprite(&mut gfx, area)?.into_iter().collect();
-                sprites.extend(ui_renderer.sprites(&mut gfx, &game.screens.ui, game.fade.layer())?);
-                sprites
+                let mut items: Vec<DrawItem> =
+                    game.movies.sprite(&mut gfx, area)?.into_iter().map(DrawItem::Sprite).collect();
+                let lang = game.language as usize;
+                items.extend(ui_renderer.items(&mut gfx, &game.screens.ui, game.fade.layer(), lang)?);
+                items
             }
         };
         if capture_path.is_none() && captures.first().is_some_and(|(t, _)| kernel.frame_count() >= *t) {
             capture_path = Some(captures.remove(0).1);
             gfx.capture_next_frame();
         }
-        gfx.render([0.0, 0.0, 0.0, 1.0], &sprites)?;
+        gfx.render([0.0, 0.0, 0.0, 1.0], &items)?;
         if let Some(c) = gfx.take_capture() {
             let path = capture_path.take().expect("a capture was requested");
             write_ppm(&path, &c)?;

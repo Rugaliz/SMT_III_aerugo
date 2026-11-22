@@ -4,6 +4,7 @@
 //! This crate has no graphics, audio or window dependencies.
 
 pub mod fade;
+pub mod input;
 pub mod kernel;
 pub mod movie;
 pub mod process;

@@ -1,4 +1,5 @@
-//! UI animation: clips that drive image colors, and the animator component that plays them.
+//! UI animation: clips that drive image colors, rectangle positions, group alpha and object activity, and the
+//! animator component that plays them.
 //!
 //! A clip stores curves in three groups, in this binding order: streamed (piecewise cubic segments), dense
 //! (sampled frames, not supported: no UI clip uses them) and constant. Each curve is bound to a property of an object below the animator by two
@@ -37,11 +38,42 @@ impl ColorChannel {
     }
 }
 
-/// One animated property: which object (path hash) and which color channel.
+/// A property an animation can drive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Property {
+    ImageColor(ColorChannel),
+    AnchoredX,
+    AnchoredY,
+    GroupAlpha,
+    Active,
+}
+
+/// Unity class ids of the animated components.
+const CLASS_GAME_OBJECT: u64 = 1;
+const CLASS_MONO_BEHAVIOUR: u64 = 114;
+const CLASS_RECT_TRANSFORM: u64 = 224;
+const CLASS_CANVAS_GROUP: u64 = 225;
+
+impl Property {
+    /// The property bound by class id `class` and attribute hash `attr`.
+    fn from_binding(class: u64, attr: u32) -> Option<Self> {
+        let is = |name: &str| crc32(name.as_bytes()) == attr;
+        match class {
+            CLASS_MONO_BEHAVIOUR => ColorChannel::from_hash(attr).map(Self::ImageColor),
+            CLASS_RECT_TRANSFORM if is("m_AnchoredPosition.x") => Some(Self::AnchoredX),
+            CLASS_RECT_TRANSFORM if is("m_AnchoredPosition.y") => Some(Self::AnchoredY),
+            CLASS_CANVAS_GROUP if is("m_Alpha") => Some(Self::GroupAlpha),
+            CLASS_GAME_OBJECT if is("m_IsActive") => Some(Self::Active),
+            _ => None,
+        }
+    }
+}
+
+/// One animated property: which object (path hash) and which property.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub path: u32,
-    pub channel: ColorChannel,
+    pub property: Property,
 }
 
 /// A cubic segment of a streamed curve, starting at `time`: `((a·dt + b)·dt + c)·dt + d`.
@@ -110,11 +142,12 @@ impl AnimClip {
         for b in v["m_ClipBindingConstant"]["genericBindings"].as_array().context("bindings")? {
             let attr = b["attribute"].as_u64().context("attribute")? as u32;
             let path = b["path"].as_u64().context("path")? as u32;
-            let Some(channel) = ColorChannel::from_hash(attr) else {
-                bail!("animated property {attr:#x} is not an image color channel");
+            let class = b["typeID"].as_u64().context("binding class")?;
+            let Some(property) = Property::from_binding(class, attr) else {
+                bail!("animated property {attr:#x} of class {class} is not supported");
             };
             ensure!(b["isPPtrCurve"].as_u64() == Some(0), "object reference curves are not supported");
-            bindings.push(Binding { path, channel });
+            bindings.push(Binding { path, property });
         }
         ensure!(
             bindings.len() == curve_count + dense_curves + constants.len(),

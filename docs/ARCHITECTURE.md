@@ -6,12 +6,12 @@
 |---|---|
 | `aerugo` | The executable: command line, application loop, developer viewers |
 | `aerugo-platform` | SDL3 window and events, keyboard and gamepad input, audio output |
-| `aerugo-gfx` | Vulkan: instance, device, swapchain, frames in flight, sprites, textures |
+| `aerugo-gfx` | Vulkan: instance, device, swapchain, frames in flight, sprites, textures, distance-field text |
 | `aerugo-unity` | Reading the game's Unity asset bundles: bundles, serialized files, object values, textures |
-| `aerugo-ui` | The game's 2D interface: object trees loaded from the UI assets, anchor layout on the 1920x1080 canvas, image quads |
+| `aerugo-ui` | The game's 2D interface: object trees loaded from the UI assets, anchor layout on the 1920x1080 canvas, image quads, text materials and layout, message tables, fonts |
 | `aerugo-audio` | The game's sound banks: FSB5 reading, Vorbis setup headers from the installation, decoding to PCM |
 | `aerugo-media` | The game's movies: ASF demuxing, WMV3 video and WMA v2 audio decoders, background decoding for playback |
-| `aerugo-sim` | Game logic: fixed tick, the process scheduler and per-tick kernel, sequences, the fade, the movie manager, the title; more systems as they are implemented |
+| `aerugo-sim` | Game logic: fixed tick, the process scheduler and per-tick kernel, sequences, the fade, input (pad and keyboard checks), the movie manager, the title; more systems as they are implemented |
 
 ### Dependency rules
 
@@ -29,6 +29,17 @@
 The original lays its 2D screens out on a 1920x1080 canvas and always shows a 16:9 picture. Aerugo does the
 same for now: the canvas is scaled to the largest 16:9 area of the window, with bars on wider or narrower
 windows. Using the full width of ultrawide displays is planned.
+
+## Text
+
+Text components are laid out the way the original's text component does it (`aerugo-ui::text`): glyph quads from
+the font's metrics and the material's padding, word wrapping, then the block anchored in the component's
+rectangle and each line justified. The renderer draws them with a GLSL transcription of the game's own
+distance-field text shader. The original draws its screens as an overlay canvas; Aerugo evaluates the shader with
+matrices that map canvas units to the window, so the shader's anti-aliasing width follows the canvas scale (at
+1920x1080 this is exactly the original's setup). Fonts and materials follow the original's per-language rules:
+objects marked to switch fonts take the language's font, and keep their material only if it samples that
+font's atlas.
 
 ## Time: fixed tick, interpolated frames
 

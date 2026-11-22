@@ -17,6 +17,7 @@ dependencies = [
  "env_logger",
  "log",
  "sdl3",
+ "serde_json",
 ]
 
 [[package]]
